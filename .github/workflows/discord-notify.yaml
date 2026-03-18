@@ -4,65 +4,249 @@ on:
   workflow_call:
     inputs:
       event:
-        description: "Event type: pr_created or deploy"
+        description: "Event type: thread_open, thread_update, thread_close, deploy"
         required: true
         type: string
       status:
-        description: "Job status (success, failure, cancelled)"
+        description: "Job status (success, failure, cancelled, merged, closed)"
         required: false
         type: string
         default: "success"
+      preview_url:
+        description: "Preview URL for build-complete notification"
+        required: false
+        type: string
+        default: ""
 
 jobs:
   notify:
     runs-on: ubuntu-latest
     steps:
-      - name: Send Discord notification
+      - name: Discord notification
         uses: actions/github-script@v7
         env:
           WEBHOOK_URL: ${{ vars.DISCORD_WEBHOOK_URL }}
           EVENT: ${{ inputs.event }}
           STATUS: ${{ inputs.status }}
+          PREVIEW_URL: ${{ inputs.preview_url }}
         with:
           script: |
-            const webhook = process.env.WEBHOOK_URL;
+            const webhook = process.env.WEBHOOK_URL?.replace(/\/+$/, '');
+            if (!webhook) {
+              core.warning('DISCORD_WEBHOOK_URL not set, skipping');
+              return;
+            }
+
             const event = process.env.EVENT;
             const status = process.env.STATUS;
+            const previewUrl = process.env.PREVIEW_URL;
             const repo = context.repo.repo;
             const actor = context.actor;
             const sha = context.sha.substring(0, 7);
             const ref = context.ref.replace('refs/heads/', '');
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${repo}/actions/runs/${context.runId}`;
-
-            let payload;
-
             const repoUrl = `${context.serverUrl}/${context.repo.owner}/${repo}`;
 
-            if (event === 'pr_created') {
+            // --- Metadata stored as a hidden PR comment ---
+            const META_TAG = '<!-- discord-metadata:';
+
+            async function getMetadata() {
               const pr = context.payload.pull_request;
-              payload = {
+              if (!pr) return {};
+
+              const { data: comments } = await github.rest.issues.listComments({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pr.number,
+                per_page: 100
+              });
+
+              for (const c of comments) {
+                if (c.body?.includes(META_TAG)) {
+                  try {
+                    const json = c.body.split(META_TAG)[1].split('-->')[0].trim();
+                    return { commentId: c.id, ...JSON.parse(json) };
+                  } catch { /* ignore malformed */ }
+                }
+              }
+              return {};
+            }
+
+            async function setMetadata(data, commentId) {
+              const pr = context.payload.pull_request;
+              if (!pr) return;
+              const body = `${META_TAG}${JSON.stringify(data)}-->`;
+
+              if (commentId) {
+                await github.rest.issues.updateComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: commentId,
+                  body
+                });
+              } else {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: pr.number,
+                  body
+                });
+              }
+            }
+
+            // --- Discord helpers ---
+
+            async function discordPost(payload, threadId) {
+              const params = new URLSearchParams({ wait: 'true' });
+              if (threadId) params.set('thread_id', threadId);
+
+              const res = await fetch(`${webhook}?${params}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+              });
+
+              if (!res.ok) {
+                const text = await res.text();
+                core.warning(`Discord POST failed: ${res.status} ${text}`);
+                return null;
+              }
+              return res.json();
+            }
+
+            async function discordPatch(messageId, payload, threadId) {
+              const params = new URLSearchParams();
+              if (threadId) params.set('thread_id', threadId);
+
+              const res = await fetch(`${webhook}/messages/${messageId}?${params}`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+              });
+
+              if (!res.ok) {
+                const text = await res.text();
+                core.warning(`Discord PATCH failed: ${res.status} ${text}`);
+                return null;
+              }
+              return res.json();
+            }
+
+            // ========== Event Handlers ==========
+
+            if (event === 'thread_open') {
+              const pr = context.payload.pull_request;
+              if (!pr) return;
+
+              const msg = await discordPost({
                 content: `🔍 **Review required** — ${repo}`,
                 embeds: [{
                   title: `#${pr.number} ${pr.title}`,
                   url: pr.html_url,
-                  description: `**${actor}** opened a pull request\n\n${pr.body ? pr.body.substring(0, 200) : ''}`,
+                  description: `**${actor}** opened a pull request`,
                   color: 5814783,
                   footer: { text: repo },
                   timestamp: new Date().toISOString()
                 }],
-                components: [{
+                thread_name: `#${pr.number} ${pr.title} — ${repo}`
+              });
+
+              if (msg?.channel_id) {
+                await setMetadata({ threadId: msg.channel_id });
+              }
+
+            } else if (event === 'thread_update') {
+              const pr = context.payload.pull_request;
+              if (!pr) return;
+
+              const meta = await getMetadata();
+              if (!meta.threadId) {
+                core.warning('No Discord thread ID found — skipping build update');
+                return;
+              }
+
+              const buildOk = status === 'success';
+              const color = buildOk ? 5814783 : 15158332;
+              let embed, components;
+
+              if (buildOk && previewUrl) {
+                embed = {
+                  title: `🔗 Preview ready — ${repo} #${pr.number}`,
+                  description: `${pr.title}\n\n⚠️ Make sure you are on Tailscale`,
+                  color,
+                  footer: { text: repo },
+                  timestamp: new Date().toISOString()
+                };
+                components = [{
                   type: 1,
                   components: [
-                    { type: 2, style: 5, label: "View PR", url: pr.html_url },
-                    { type: 2, style: 5, label: "Files Changed", url: `${pr.html_url}/files` }
+                    { type: 2, style: 5, label: "Open Preview", url: previewUrl },
+                    { type: 2, style: 5, label: "View PR", url: pr.html_url }
                   ]
+                }];
+              } else {
+                const emoji = buildOk ? '✅' : '❌';
+                embed = {
+                  title: `${emoji} Build ${buildOk ? 'ready' : 'failed'} — ${repo} #${pr.number}`,
+                  description: pr.title,
+                  color,
+                  footer: { text: repo },
+                  timestamp: new Date().toISOString()
+                };
+                components = [{
+                  type: 1,
+                  components: [
+                    { type: 2, style: 5, label: "View Run", url: runUrl },
+                    { type: 2, style: 5, label: "View PR", url: pr.html_url }
+                  ]
+                }];
+              }
+
+              const payload = { embeds: [embed], components };
+
+              if (meta.buildMessageId) {
+                // Edit existing build message
+                await discordPatch(meta.buildMessageId, payload, meta.threadId);
+              } else {
+                // Post new build message, store its ID
+                const msg = await discordPost(payload, meta.threadId);
+                if (msg?.id) {
+                  const { commentId, ...stored } = meta;
+                  await setMetadata({ ...stored, buildMessageId: msg.id }, commentId);
+                }
+              }
+
+            } else if (event === 'thread_close') {
+              const pr = context.payload.pull_request;
+              if (!pr) return;
+
+              const meta = await getMetadata();
+              if (!meta.threadId) {
+                core.warning('No Discord thread ID found — skipping close');
+                return;
+              }
+
+              const merged = status === 'merged';
+              const emoji = merged ? '✅' : '🚫';
+              const color = merged ? 3066993 : 10070709;
+              const statusText = merged ? 'merged' : 'closed';
+
+              await discordPost({
+                content: `${emoji} **Review complete** — ${statusText}`,
+                embeds: [{
+                  title: `#${pr.number} ${pr.title}`,
+                  url: pr.html_url,
+                  description: `PR ${statusText} by **${actor}**`,
+                  color,
+                  footer: { text: repo },
+                  timestamp: new Date().toISOString()
                 }]
-              };
-            } else {
+              }, meta.threadId);
+
+            } else if (event === 'deploy') {
               const color = status === 'success' ? 3066993 : status === 'failure' ? 15158332 : 10070709;
               const emoji = status === 'success' ? '✅' : status === 'failure' ? '❌' : '⚠️';
 
-              // Get commit message
               let commitMsg = '';
               try {
                 const { data: commit } = await github.rest.repos.getCommit({
@@ -71,19 +255,17 @@ jobs:
                   ref: context.sha
                 });
                 commitMsg = commit.commit.message.split('\n')[0];
-              } catch (e) {
-                commitMsg = '';
-              }
+              } catch {}
 
               const compareUrl = `${repoUrl}/compare/${context.payload.before?.substring(0, 7)}...${sha}`;
 
-              payload = {
+              await discordPost({
                 flags: 4096,
                 embeds: [{
                   title: `${emoji} ${repo} deployed`,
                   url: runUrl,
                   description: `\`${sha}\` ${commitMsg}\n\nby ${actor}`,
-                  color: color,
+                  color,
                   footer: { text: `${repo} • ${ref}` },
                   timestamp: new Date().toISOString()
                 }],
@@ -94,16 +276,5 @@ jobs:
                     { type: 2, style: 5, label: "Compare Changes", url: compareUrl }
                   ]
                 }]
-              };
-            }
-
-            const res = await fetch(webhook, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(payload)
-            });
-
-            if (!res.ok) {
-              const text = await res.text();
-              core.setFailed(`Discord webhook failed: ${res.status} ${text}`);
+              });
             }

@@ -38,6 +38,7 @@ env:
 
 jobs:
   build:
+    if: github.event.action != 'closed'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -155,11 +156,32 @@ jobs:
             --sync-option CreateNamespace=true \
             --sync-option PruneLast=true
 
-  discord-pr:
+  # --- Discord thread lifecycle ---
+
+  discord-thread-open:
     if: github.event_name == 'pull_request' && github.event.action == 'opened'
     uses: CellarNode/.github/.github/workflows/discord-notify.yaml@main
     with:
-      event: pr_created
+      event: thread_open
+
+  discord-build-update:
+    needs: [build, discord-thread-open]
+    if: >-
+      always() &&
+      github.event_name == 'pull_request' &&
+      github.event.action != 'closed' &&
+      needs.build.result != 'cancelled'
+    uses: CellarNode/.github/.github/workflows/discord-notify.yaml@main
+    with:
+      event: thread_update
+      status: ${{ needs.build.result }}
+
+  discord-thread-close:
+    if: github.event_name == 'pull_request' && github.event.action == 'closed'
+    uses: CellarNode/.github/.github/workflows/discord-notify.yaml@main
+    with:
+      event: thread_close
+      status: ${{ github.event.pull_request.merged && 'merged' || 'closed' }}
 
   discord-deploy:
     needs: deploy
