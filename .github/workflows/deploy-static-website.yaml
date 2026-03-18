@@ -1,0 +1,193 @@
+name: Deploy Static Website
+
+on:
+  workflow_call:
+    inputs:
+      website:
+        description: "Production hostname (e.g. admin.cellarnode.com)"
+        required: true
+        type: string
+      website_slug:
+        description: "Slug for preview URLs (e.g. admin-cellarnode-com)"
+        required: true
+        type: string
+      build_env:
+        description: "Build-time env vars as KEY=VALUE lines"
+        required: false
+        type: string
+        default: ""
+      typecheck:
+        description: "Run pnpm tsc --noEmit before build"
+        required: false
+        type: boolean
+        default: false
+      lint:
+        description: "Run pnpm lint before build"
+        required: false
+        type: boolean
+        default: false
+      frozen_lockfile:
+        description: "Use --frozen-lockfile for pnpm install"
+        required: false
+        type: boolean
+        default: true
+      node_version:
+        description: "Node.js version"
+        required: false
+        type: string
+        default: "22"
+    secrets:
+      DISCORD_WEBHOOK_URL:
+        required: false
+
+env:
+  PROJECT_ID: festive-terrain-478011-h0
+  GCS_BUCKET: websites-deploy
+
+jobs:
+  build-deploy:
+    if: github.event.action != 'closed'
+    runs-on: self-hosted-k8s
+    container:
+      image: ubuntu:24.04
+
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ inputs.node_version }}
+
+    - name: Setup pnpm
+      uses: pnpm/action-setup@v4
+
+    - name: Install dependencies
+      run: pnpm install ${{ inputs.frozen_lockfile && '--frozen-lockfile' || '--no-frozen-lockfile' }}
+
+    - name: Type check
+      if: inputs.typecheck
+      run: pnpm tsc --noEmit
+
+    - name: Lint
+      if: inputs.lint
+      run: pnpm lint
+
+    - name: Build
+      shell: bash
+      run: |
+        if [ -n "$BUILD_ENV_VARS" ]; then
+          while IFS= read -r line; do
+            [ -n "$line" ] && export "$line"
+          done <<< "$BUILD_ENV_VARS"
+        fi
+        pnpm build
+      env:
+        BUILD_ENV_VARS: ${{ inputs.build_env }}
+
+    - name: Authenticate to Google Cloud
+      id: auth
+      uses: google-github-actions/auth@v3
+      with:
+        project_id: ${{ env.PROJECT_ID }}
+        workload_identity_provider: 'projects/1040576468442/locations/global/workloadIdentityPools/iamwipp-pipelines/providers/iamwipp-github-pipelines-beveriq'
+        service_account: 'pipelines@${{ env.PROJECT_ID }}.iam.gserviceaccount.com'
+
+    - name: Set up Cloud SDK
+      uses: google-github-actions/setup-gcloud@v2
+
+    - name: Deploy to production
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      run: |
+        gcloud storage rsync --recursive --checksums-only --delete-unmatched-destination-objects \
+          ./dist gs://${{ env.GCS_BUCKET }}/${{ inputs.website }}
+
+    - name: Deploy preview
+      if: github.event_name == 'pull_request'
+      run: |
+        gcloud storage rsync --recursive --checksums-only --delete-unmatched-destination-objects \
+          ./dist gs://${{ env.GCS_BUCKET }}/preview/${{ inputs.website_slug }}/pr${{ github.event.pull_request.number }}
+
+    - name: Comment preview URL
+      if: github.event_name == 'pull_request'
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const slug = '${{ inputs.website_slug }}';
+          const pr = context.issue.number;
+          const previewUrl = `https://${slug}-pr${pr}.dev.cellarnode.com`;
+          const body = `## Preview Deployment\n\nPreview available at: ${previewUrl}`;
+
+          const { data: comments } = await github.rest.issues.listComments({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            issue_number: pr,
+          });
+
+          const botComment = comments.find(c =>
+            c.user.type === 'Bot' && c.body.includes('Preview Deployment')
+          );
+
+          if (botComment) {
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: botComment.id,
+              body: body
+            });
+          } else {
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pr,
+              body: body
+            });
+          }
+
+  cleanup:
+    if: github.event_name == 'pull_request' && github.event.action == 'closed'
+    runs-on: self-hosted-k8s
+    container:
+      image: ubuntu:24.04
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+    - name: Authenticate to Google Cloud
+      uses: google-github-actions/auth@v3
+      with:
+        project_id: ${{ env.PROJECT_ID }}
+        workload_identity_provider: 'projects/1040576468442/locations/global/workloadIdentityPools/iamwipp-pipelines/providers/iamwipp-github-pipelines-beveriq'
+        service_account: 'pipelines@${{ env.PROJECT_ID }}.iam.gserviceaccount.com'
+
+    - name: Set up Cloud SDK
+      uses: google-github-actions/setup-gcloud@v2
+
+    - name: Delete preview
+      run: |
+        gcloud storage rm --recursive gs://${{ env.GCS_BUCKET }}/preview/${{ inputs.website_slug }}/pr${{ github.event.pull_request.number }} || true
+
+  discord-pr:
+    if: github.event_name == 'pull_request' && github.event.action == 'opened'
+    uses: CellarNode/.github/.github/workflows/discord-notify.yaml@main
+    with:
+      event: pr_created
+    secrets:
+      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+
+  discord-deploy:
+    needs: build-deploy
+    if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    uses: CellarNode/.github/.github/workflows/discord-notify.yaml@main
+    with:
+      event: deploy
+      status: ${{ needs.build-deploy.result }}
+    secrets:
+      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
