@@ -36,9 +36,6 @@ on:
         required: false
         type: string
         default: "22"
-    secrets:
-      DISCORD_WEBHOOK_URL:
-        required: false
 
 env:
   PROJECT_ID: festive-terrain-478011-h0
@@ -179,8 +176,6 @@ jobs:
     uses: CellarNode/.github/.github/workflows/discord-notify.yaml@main
     with:
       event: pr_created
-    secrets:
-      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
 
   discord-deploy:
     needs: build-deploy
@@ -189,5 +184,3 @@ jobs:
     with:
       event: deploy
       status: ${{ needs.build-deploy.result }}
-    secrets:
-      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
