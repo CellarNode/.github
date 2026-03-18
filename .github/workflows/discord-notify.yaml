@@ -1,0 +1,84 @@
+name: Discord Notification
+
+on:
+  workflow_call:
+    inputs:
+      status:
+        description: "Job status (success, failure, cancelled)"
+        required: true
+        type: string
+      title:
+        description: "Notification title"
+        required: false
+        type: string
+        default: ""
+      description:
+        description: "Custom message body"
+        required: false
+        type: string
+        default: ""
+      color:
+        description: "Embed color override (decimal). Default: green for success, red for failure"
+        required: false
+        type: string
+        default: ""
+    secrets:
+      DISCORD_WEBHOOK_URL:
+        required: true
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send Discord notification
+        env:
+          WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          STATUS: ${{ inputs.status }}
+          TITLE: ${{ inputs.title }}
+          DESCRIPTION: ${{ inputs.description }}
+          COLOR_OVERRIDE: ${{ inputs.color }}
+          REPO: ${{ github.repository }}
+          REF: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+          ACTOR: ${{ github.actor }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          SHORT_SHA=${SHA::7}
+
+          if [ "$STATUS" = "success" ]; then
+            COLOR=${COLOR_OVERRIDE:-3066993}
+            STATUS_EMOJI="✅"
+          elif [ "$STATUS" = "failure" ]; then
+            COLOR=${COLOR_OVERRIDE:-15158332}
+            STATUS_EMOJI="❌"
+          else
+            COLOR=${COLOR_OVERRIDE:-10070709}
+            STATUS_EMOJI="⚠️"
+          fi
+
+          if [ -z "$TITLE" ]; then
+            TITLE="${STATUS_EMOJI} ${REPO##*/} — ${STATUS}"
+          fi
+
+          if [ -z "$DESCRIPTION" ]; then
+            DESCRIPTION="**Branch:** \`${REF}\` (\`${SHORT_SHA}\`)\n**Trigger:** ${EVENT_NAME} by ${ACTOR}"
+          fi
+
+          PAYLOAD=$(cat <<EOF
+          {
+            "embeds": [{
+              "title": "${TITLE}",
+              "description": "${DESCRIPTION}",
+              "color": ${COLOR},
+              "url": "${RUN_URL}",
+              "footer": { "text": "${REPO}" },
+              "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            }]
+          }
+          EOF
+          )
+
+          curl -sf -X POST "$WEBHOOK_URL" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD"
