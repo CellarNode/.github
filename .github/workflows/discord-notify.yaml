@@ -139,12 +139,12 @@ jobs:
               if (!pr) return;
 
               const msg = await discordPost({
-                content: `🔍 **Review required** — ${repo}`,
+                content: `⚠️ **Review required** — ${repo}`,
                 embeds: [{
                   title: `#${pr.number} ${pr.title}`,
                   url: pr.html_url,
                   description: `**${actor}** opened a pull request`,
-                  color: 5814783,
+                  color: 15844367,
                   footer: { text: repo },
                   timestamp: new Date().toISOString()
                 }],
@@ -152,7 +152,7 @@ jobs:
               });
 
               if (msg?.channel_id) {
-                await setMetadata({ threadId: msg.channel_id });
+                await setMetadata({ threadId: msg.channel_id, openMessageId: msg.id });
               }
 
             } else if (event === 'thread_update') {
@@ -172,18 +172,12 @@ jobs:
               if (buildOk && previewUrl) {
                 embed = {
                   title: `🔗 Preview ready — ${repo} #${pr.number}`,
-                  description: `${pr.title}\n\n⚠️ Make sure you are on Tailscale`,
+                  url: previewUrl,
+                  description: `${pr.title}\n\n[Open Preview](${previewUrl}) · [View PR](${pr.html_url})\n\n⚠️ Make sure you are on Tailscale`,
                   color,
                   footer: { text: repo },
                   timestamp: new Date().toISOString()
                 };
-                components = [{
-                  type: 1,
-                  components: [
-                    { type: 2, style: 5, label: "Open Preview", url: previewUrl },
-                    { type: 2, style: 5, label: "View PR", url: pr.html_url }
-                  ]
-                }];
               } else {
                 const emoji = buildOk ? '✅' : '❌';
                 embed = {
@@ -227,9 +221,24 @@ jobs:
               }
 
               const merged = status === 'merged';
-              const emoji = merged ? '✅' : '🚫';
-              const color = merged ? 3066993 : 10070709;
+              const emoji = merged ? '✅' : '❌';
+              const color = merged ? 3066993 : 15158332;
               const statusText = merged ? 'merged' : 'closed';
+
+              // Update the opening message to reflect final state
+              if (meta.openMessageId) {
+                await discordPatch(meta.openMessageId, {
+                  content: `${emoji} **${merged ? 'Merged' : 'Closed'}** — ${repo}`,
+                  embeds: [{
+                    title: `#${pr.number} ${pr.title}`,
+                    url: pr.html_url,
+                    description: `PR ${statusText} by **${actor}**`,
+                    color,
+                    footer: { text: repo },
+                    timestamp: new Date().toISOString()
+                  }]
+                }, meta.threadId);
+              }
 
               await discordPost({
                 content: `${emoji} **Review complete** — ${statusText}`,
