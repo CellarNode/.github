@@ -1,0 +1,170 @@
+name: Build and Deploy Backend
+
+on:
+  workflow_call:
+    inputs:
+      app_name:
+        description: "Application name (used for image names and ArgoCD app prefix)"
+        required: true
+        type: string
+      docker_targets:
+        description: "JSON array of Docker build targets, e.g. [\"unified\", \"worker\"]"
+        required: true
+        type: string
+      flavors:
+        description: "JSON array of deploy flavors, e.g. [\"admin\", \"public\", \"worker-extraction\"]"
+        required: true
+        type: string
+      deploy_path:
+        description: "ArgoCD kustomize path prefix in crossplane-gcloud repo"
+        required: false
+        type: string
+        default: "./deploy/installations"
+      argocd_project:
+        description: "ArgoCD project name"
+        required: false
+        type: string
+        default: "products"
+      worker_image_prefix:
+        description: "Flavor prefix that maps to the worker Docker target (e.g. 'worker' matches worker-*)"
+        required: false
+        type: string
+        default: "worker"
+
+env:
+  CONTAINER_REGISTRY: europe-north1-docker.pkg.dev
+  PROJECT_ID: festive-terrain-478011-h0
+  CONTAINER_REPOSITORY: beveriq
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      image_tag: ${{ steps.vars.outputs.image_tag }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set image tag
+        id: vars
+        run: |
+          SHORT_SHA=${GITHUB_SHA::7}
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "image_tag=pr-${{ github.event.pull_request.number }}-${SHORT_SHA}" >> $GITHUB_OUTPUT
+          else
+            echo "image_tag=${SHORT_SHA}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Authenticate to Google Cloud
+        id: auth
+        uses: google-github-actions/auth@v3
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+          workload_identity_provider: "projects/1040576468442/locations/global/workloadIdentityPools/iamwipp-pipelines/providers/iamwipp-github-pipelines-beveriq"
+          service_account: "pipelines@${{ env.PROJECT_ID }}.iam.gserviceaccount.com"
+          token_format: "access_token"
+
+      - name: Login to Artifact Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.CONTAINER_REGISTRY }}
+          username: oauth2accesstoken
+          password: ${{ steps.auth.outputs.access_token }}
+
+      - name: Build and push images
+        shell: bash
+        run: |
+          TARGETS='${{ inputs.docker_targets }}'
+          APP='${{ inputs.app_name }}'
+          TAG='${{ steps.vars.outputs.image_tag }}'
+          REGISTRY="${{ env.CONTAINER_REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.CONTAINER_REPOSITORY }}"
+          CACHE_REF="${REGISTRY}/${APP}-cache:latest"
+
+          FIRST=true
+          for TARGET in $(echo "$TARGETS" | jq -r '.[]'); do
+            IMAGE="${REGISTRY}/${APP}-${TARGET}"
+
+            CACHE_TO_ARG=""
+            if [ "$FIRST" = true ]; then
+              CACHE_TO_ARG="--cache-to=type=registry,ref=${CACHE_REF},mode=max"
+              FIRST=false
+            fi
+
+            docker buildx build \
+              --file ./Dockerfile \
+              --target "$TARGET" \
+              --push \
+              --tag "${IMAGE}:${TAG}" \
+              --tag "${IMAGE}:latest" \
+              --cache-from="type=registry,ref=${CACHE_REF}" \
+              $CACHE_TO_ARG \
+              .
+          done
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    strategy:
+      matrix:
+        flavor: ${{ fromJson(inputs.flavors) }}
+
+    steps:
+      - name: Setup ArgoCD CLI
+        uses: imajeetyadav/argocd-cli@v1
+        with:
+          version: v3.2.1
+
+      - name: Deploy ${{ matrix.flavor }} to ArgoCD
+        env:
+          ARGOCD_AUTH_TOKEN: ${{ vars.ARGO_API_KEY }}
+          ARGOCD_URL: argo.anli.es
+        run: |
+          APP='${{ inputs.app_name }}'
+          FLAVOR='${{ matrix.flavor }}'
+          WORKER_PREFIX='${{ inputs.worker_image_prefix }}'
+          REGISTRY="${{ env.CONTAINER_REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.CONTAINER_REPOSITORY }}"
+          TAG="${{ needs.build.outputs.image_tag }}"
+
+          # Map flavor to Docker target image
+          case "$FLAVOR" in
+            ${WORKER_PREFIX}-*) IMAGE_NAME="${APP}-${WORKER_PREFIX}" ;;
+            *)
+              # Use first non-worker target as the default image
+              FIRST_TARGET=$(echo '${{ inputs.docker_targets }}' | jq -r '[.[] | select(. != "${{ inputs.worker_image_prefix }}")][0]')
+              IMAGE_NAME="${APP}-${FIRST_TARGET}"
+              ;;
+          esac
+
+          argocd app create --upsert ${APP}-${FLAVOR} --server $ARGOCD_URL \
+            --project ${{ inputs.argocd_project }} \
+            --repo git@github.com:CellarNode/crossplane-gcloud.git \
+            --path ${{ inputs.deploy_path }}/${APP}-${FLAVOR}/ \
+            --dest-server https://kubernetes.default.svc \
+            --dest-namespace ${APP}-${FLAVOR} \
+            --kustomize-image "app-image=${REGISTRY}/${IMAGE_NAME}:${TAG}" \
+            --kustomize-common-label app.kubernetes.io/name=${APP}-${FLAVOR} \
+            --nameprefix=${FLAVOR}- \
+            --sync-policy auto \
+            --sync-option CreateNamespace=true \
+            --sync-option PruneLast=true
+
+  discord-pr:
+    if: github.event_name == 'pull_request' && github.event.action == 'opened'
+    uses: CellarNode/.github/.github/workflows/discord-notify.yaml@main
+    with:
+      event: pr_created
+
+  discord-deploy:
+    needs: deploy
+    if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    uses: CellarNode/.github/.github/workflows/discord-notify.yaml@main
+    with:
+      event: deploy
+      status: ${{ needs.deploy.result }}
