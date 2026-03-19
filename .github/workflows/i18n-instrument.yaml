@@ -1,0 +1,71 @@
+name: i18n — Instrument
+
+on:
+  workflow_call:
+    inputs:
+      dry-run:
+        description: 'Preview changes without modifying files'
+        required: false
+        type: boolean
+        default: true
+      node_version:
+        description: 'Node.js version'
+        required: false
+        type: string
+        default: '22'
+
+jobs:
+  instrument:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Install project dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install i18next-cli
+        run: npm install -g i18next-cli
+
+      - name: Instrument hardcoded strings
+        run: |
+          if [ "${{ inputs.dry-run }}" = "true" ]; then
+            npx i18next-cli instrument --dry-run
+          else
+            npx i18next-cli instrument
+          fi
+
+      - name: Check for changes
+        if: inputs.dry-run == false
+        id: diff
+        run: |
+          git diff --exit-code && echo "changed=false" >> $GITHUB_OUTPUT || echo "changed=true" >> $GITHUB_OUTPUT
+
+      - name: Create PR
+        if: inputs.dry-run == false && steps.diff.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          BRANCH="chore/i18n-instrument-$(date +%Y%m%d-%H%M)"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git add src/
+          git commit -m "chore(i18n): instrument hardcoded strings with t()"
+          git push origin "$BRANCH"
+          gh pr create \
+            --title "chore(i18n): instrument hardcoded strings" \
+            --body "Auto-instrumented hardcoded strings with t() calls using i18next-cli. Please review carefully — heuristic-based, may need manual cleanup." \
+            --base "${GITHUB_REF_NAME}" \
+            --head "$BRANCH"

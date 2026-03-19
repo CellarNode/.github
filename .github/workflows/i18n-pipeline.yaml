@@ -1,0 +1,106 @@
+name: i18n — Extract + Translate
+
+on:
+  workflow_call:
+    inputs:
+      force-translate:
+        description: 'Force retranslate all keys'
+        required: false
+        type: boolean
+        default: false
+      context:
+        description: 'Domain context for Gemini translation'
+        required: false
+        type: string
+        default: 'Beverage industry B2B platform'
+      node_version:
+        description: 'Node.js version'
+        required: false
+        type: string
+        default: '22'
+      locales_path:
+        description: 'Path to locales directory'
+        required: false
+        type: string
+        default: 'public/locales'
+      target_languages:
+        description: 'Comma-separated target language codes'
+        required: false
+        type: string
+        default: 'zh,fr,de,it,es,sv,ru'
+    secrets:
+      GOOGLE_API_KEY:
+        required: true
+
+jobs:
+  extract-translate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Install project dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install i18n tools
+        run: npm install -g i18next-cli polyglot-i18n
+
+      - name: Extract translation keys
+        run: npx i18next-cli extract
+
+      - name: Sync language files
+        run: npx i18next-cli sync
+
+      - name: Translate new/changed keys
+        env:
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+        run: |
+          FORCE_FLAG=""
+          if [ "${{ inputs.force-translate }}" = "true" ]; then
+            FORCE_FLAG="--force"
+          fi
+
+          polyglot-i18n translate \
+            --input "./${{ inputs.locales_path }}/en" \
+            --output-languages "${{ inputs.target_languages }}" \
+            --provider gemini \
+            --api-key "$GOOGLE_API_KEY" \
+            --context "${{ inputs.context }}" \
+            $FORCE_FLAG
+
+      - name: Generate TypeScript types
+        run: npx i18next-cli types || true
+
+      - name: Check for changes
+        id: diff
+        run: |
+          git diff --exit-code && echo "changed=false" >> $GITHUB_OUTPUT || echo "changed=true" >> $GITHUB_OUTPUT
+
+      - name: Create PR
+        if: steps.diff.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          BRANCH="chore/i18n-pipeline-$(date +%Y%m%d-%H%M)"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git add "${{ inputs.locales_path }}/" .polyglot-cache.json src/ || true
+          git commit -m "chore(i18n): extract + translate"
+          git push origin "$BRANCH"
+          gh pr create \
+            --title "chore(i18n): extract + translate" \
+            --body "Automated i18n pipeline: extracted keys, synced languages, translated via Gemini, regenerated types." \
+            --base "${GITHUB_REF_NAME}" \
+            --head "$BRANCH"
