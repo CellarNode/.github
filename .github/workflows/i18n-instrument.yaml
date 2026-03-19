@@ -46,6 +46,14 @@ jobs:
             npx i18next-cli instrument
           fi
 
+      - name: Validate instrumented code
+        if: inputs.dry-run == false
+        run: |
+          echo "Running lint to catch broken imports/syntax..."
+          pnpm lint
+          echo "Running type check..."
+          pnpm tsc --noEmit
+
       - name: Check for changes
         if: inputs.dry-run == false
         id: diff
