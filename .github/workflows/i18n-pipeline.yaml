@@ -1,4 +1,4 @@
-name: i18n — Extract + Translate
+name: i18n — Sync + Translate
 
 on:
   workflow_call:
@@ -33,7 +33,7 @@ on:
         required: true
 
 jobs:
-  extract-translate:
+  sync-translate:
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -56,10 +56,7 @@ jobs:
       - name: Install i18n tools
         run: npm install -g i18next-cli polyglot-i18n
 
-      - name: Extract translation keys
-        run: npx i18next-cli extract
-
-      - name: Sync language files
+      - name: Sync locale files
         run: npx i18next-cli sync
 
       - name: Translate new/changed keys
@@ -97,10 +94,10 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git checkout -b "$BRANCH"
           git add "${{ inputs.locales_path }}/" .polyglot-cache.json src/ || true
-          git commit -m "chore(i18n): extract + translate"
+          git commit -m "chore(i18n): sync + translate"
           git push origin "$BRANCH"
           gh pr create \
-            --title "chore(i18n): extract + translate" \
-            --body "Automated i18n pipeline: extracted keys, synced languages, translated via Gemini, regenerated types." \
+            --title "chore(i18n): sync + translate" \
+            --body "Automated i18n pipeline: synced locale files, translated via Gemini, regenerated types." \
             --base "${GITHUB_REF_NAME}" \
             --head "$BRANCH"
