@@ -17,6 +17,11 @@ on:
         required: false
         type: string
         default: ""
+      tags:
+        description: "Comma-separated forum tag names to apply (e.g. backend,admin)"
+        required: false
+        type: string
+        default: ""
 
 jobs:
   notify:
@@ -29,6 +34,7 @@ jobs:
           EVENT: ${{ inputs.event }}
           STATUS: ${{ inputs.status }}
           PREVIEW_URL: ${{ inputs.preview_url }}
+          TAGS: ${{ inputs.tags }}
         with:
           script: |
             const webhook = process.env.WEBHOOK_URL?.replace(/\/+$/, '');
@@ -46,6 +52,20 @@ jobs:
             const ref = context.ref.replace('refs/heads/', '');
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${repo}/actions/runs/${context.runId}`;
             const repoUrl = `${context.serverUrl}/${context.repo.owner}/${repo}`;
+
+            // Forum tag name → ID map
+            const TAG_MAP = {
+              backend:  '1484207128288694443',
+              admin:    '1484207163252674630',
+              importer: '1484207182508589158',
+              producer: '1484207205149573181',
+              infra:    '1484207231728881765',
+            };
+
+            const appliedTags = (process.env.TAGS || '')
+              .split(',')
+              .map(t => TAG_MAP[t.trim()])
+              .filter(Boolean);
 
             // --- Metadata stored as a hidden PR comment ---
             const META_TAG = '<!-- discord-metadata:';
@@ -148,7 +168,8 @@ jobs:
                   footer: { text: repo },
                   timestamp: new Date().toISOString()
                 }],
-                thread_name: `#${pr.number} ${pr.title} — ${repo}`
+                thread_name: `#${pr.number} ${pr.title} — ${repo}`,
+                ...(appliedTags.length && { applied_tags: appliedTags })
               });
 
               if (msg?.channel_id) {

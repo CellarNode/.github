@@ -30,6 +30,11 @@ on:
         required: false
         type: string
         default: "worker"
+      discord_tags:
+        description: "Comma-separated Discord forum tag names (e.g. backend,infra)"
+        required: false
+        type: string
+        default: ""
 
 env:
   CONTAINER_REGISTRY: europe-north1-docker.pkg.dev
@@ -165,6 +170,7 @@ jobs:
     uses: CellarNode/.github/.github/workflows/discord-notify.yaml@main
     with:
       event: thread_open
+      tags: ${{ inputs.discord_tags }}
 
   discord-build-update:
     needs: [build, discord-thread-open]
@@ -192,3 +198,4 @@ jobs:
     with:
       event: deploy
       status: ${{ needs.deploy.result }}
+      tags: ${{ inputs.discord_tags }}

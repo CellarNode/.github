@@ -36,6 +36,11 @@ on:
         required: false
         type: string
         default: "22"
+      discord_tags:
+        description: "Comma-separated Discord forum tag names (e.g. admin,importer)"
+        required: false
+        type: string
+        default: ""
 
 env:
   PROJECT_ID: festive-terrain-478011-h0
@@ -178,6 +183,7 @@ jobs:
     uses: CellarNode/.github/.github/workflows/discord-notify.yaml@main
     with:
       event: thread_open
+      tags: ${{ inputs.discord_tags }}
 
   discord-build-update:
     needs: [build-deploy, discord-thread-open]
@@ -206,3 +212,4 @@ jobs:
     with:
       event: deploy
       status: ${{ needs.build-deploy.result }}
+      tags: ${{ inputs.discord_tags }}
