@@ -277,34 +277,108 @@ jobs:
               const color = status === 'success' ? 3066993 : status === 'failure' ? 15158332 : 10070709;
               const emoji = status === 'success' ? '✅' : status === 'failure' ? '❌' : '⚠️';
 
-              let commitMsg = '';
-              try {
-                const { data: commit } = await github.rest.repos.getCommit({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  ref: context.sha
-                });
-                commitMsg = commit.commit.message.split('\n')[0];
-              } catch {}
-
               const compareUrl = `${repoUrl}/compare/${context.payload.before?.substring(0, 7)}...${sha}`;
 
-              await discordPost({
-                flags: 4096,
-                embeds: [{
-                  title: `${emoji} ${repo} deployed`,
-                  url: runUrl,
-                  description: `\`${sha}\` ${commitMsg}\n\nby ${actor}`,
-                  color,
-                  footer: { text: `${repo} • ${ref}` },
-                  timestamp: new Date().toISOString()
-                }],
-                components: [{
-                  type: 1,
-                  components: [
-                    { type: 2, style: 5, label: "View Run", url: runUrl },
-                    { type: 2, style: 5, label: "Compare Changes", url: compareUrl }
-                  ]
-                }]
-              });
+              // Find the merged PR — get thread ID and body for changelog
+              let threadId = null;
+              let changelog = '';
+              let prTitle = '';
+              let prUrl = '';
+              try {
+                const { data: prs } = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  commit_sha: context.sha
+                });
+                const merged = prs.find(pr => pr.merged_at);
+                if (merged) {
+                  prTitle = merged.title;
+                  prUrl = merged.html_url;
+                  if (merged.body) {
+                    changelog = merged.body
+                      .replace(/<!--[\s\S]*?-->/g, '')
+                      .trim();
+                    if (changelog.length > 3500) {
+                      changelog = changelog.substring(0, 3500) + '…';
+                    }
+                  }
+
+                  const { data: comments } = await github.rest.issues.listComments({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: merged.number,
+                    per_page: 100
+                  });
+                  for (const c of comments) {
+                    if (c.body?.includes(META_TAG)) {
+                      try {
+                        const json = c.body.split(META_TAG)[1].split('-->')[0].trim();
+                        threadId = JSON.parse(json).threadId;
+                      } catch {}
+                      break;
+                    }
+                  }
+                }
+              } catch {}
+
+              // Get commit message for direct pushes (no PR)
+              let commitMsg = '';
+              if (!changelog) {
+                try {
+                  const { data: commit } = await github.rest.repos.getCommit({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    ref: context.sha
+                  });
+                  commitMsg = commit.commit.message.trim();
+                  if (commitMsg.length > 3500) {
+                    commitMsg = commitMsg.substring(0, 3500) + '…';
+                  }
+                } catch {}
+              }
+
+              const changeText = changelog || commitMsg;
+              const deployDescription = changeText
+                ? `${changeText}\n\n\`${sha}\` by ${actor}`
+                : `\`${sha}\` by ${actor}`;
+
+              if (threadId) {
+                await discordPost({
+                  embeds: [{
+                    title: `${emoji} Deployed to production`,
+                    url: runUrl,
+                    description: deployDescription,
+                    color,
+                    footer: { text: `${repo} • ${ref}` },
+                    timestamp: new Date().toISOString()
+                  }],
+                  components: [{
+                    type: 1,
+                    components: [
+                      { type: 2, style: 5, label: "View Run", url: runUrl },
+                      { type: 2, style: 5, label: "Compare Changes", url: compareUrl }
+                    ]
+                  }]
+                }, threadId);
+              } else {
+                await discordPost({
+                  embeds: [{
+                    title: `${emoji} Deployed to production — ${repo}`,
+                    url: runUrl,
+                    description: deployDescription,
+                    color,
+                    footer: { text: `${repo} • ${ref}` },
+                    timestamp: new Date().toISOString()
+                  }],
+                  components: [{
+                    type: 1,
+                    components: [
+                      { type: 2, style: 5, label: "View Run", url: runUrl },
+                      { type: 2, style: 5, label: "Compare Changes", url: compareUrl }
+                    ]
+                  }],
+                  thread_name: `${emoji} ${repo} deploy — ${sha}`,
+                  ...(appliedTags.length && { applied_tags: appliedTags })
+                });
+              }
             }
