@@ -44,17 +44,30 @@ jobs:
       - name: Set image tag
         id: vars
         run: |
-          SHORT_SHA=${GITHUB_SHA::7}
+          SHORT_SHA="${GITHUB_SHA::7}"
           if [ "${{ github.event_name }}" = "pull_request" ]; then
-            echo "image_tag=pr-${{ github.event.pull_request.number }}-${SHORT_SHA}" >> $GITHUB_OUTPUT
+            echo "image_tag=pr-${{ github.event.pull_request.number }}-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+            if [ "${{ github.event.pull_request.head.repo.full_name }}" = "${{ github.repository }}" ]; then
+              echo "should_push=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "should_push=false" >> "$GITHUB_OUTPUT"
+            fi
+            echo "push_latest=false" >> "$GITHUB_OUTPUT"
           else
-            echo "image_tag=${SHORT_SHA}" >> $GITHUB_OUTPUT
+            echo "image_tag=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+            echo "should_push=true" >> "$GITHUB_OUTPUT"
+            if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
+              echo "push_latest=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "push_latest=false" >> "$GITHUB_OUTPUT"
+            fi
           fi
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
       - name: Authenticate to Google Cloud
+        if: steps.vars.outputs.should_push == 'true'
         id: auth
         uses: google-github-actions/auth@v3
         with:
@@ -64,6 +77,7 @@ jobs:
           token_format: "access_token"
 
       - name: Login to Artifact Registry
+        if: steps.vars.outputs.should_push == 'true'
         uses: docker/login-action@v3
         with:
           registry: ${{ env.CONTAINER_REGISTRY }}
@@ -71,6 +85,7 @@ jobs:
           password: ${{ steps.auth.outputs.access_token }}
 
       - name: Build and push image
+        if: steps.vars.outputs.should_push == 'true'
         shell: bash
         run: |
           APP='${{ inputs.app_name }}'
@@ -78,13 +93,21 @@ jobs:
           REGISTRY="${{ env.CONTAINER_REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.CONTAINER_REPOSITORY }}"
           CACHE_REF="${REGISTRY}/${APP}-cache:latest"
 
+          TAGS="--tag ${REGISTRY}/${APP}:${TAG}"
+          if [ "${{ steps.vars.outputs.push_latest }}" = "true" ]; then
+            TAGS="${TAGS} --tag ${REGISTRY}/${APP}:latest"
+          fi
+
           docker buildx build \
             --push \
-            --tag "${REGISTRY}/${APP}:${TAG}" \
-            --tag "${REGISTRY}/${APP}:latest" \
+            ${TAGS} \
             --cache-from="type=registry,ref=${CACHE_REF}" \
             --cache-to="type=registry,ref=${CACHE_REF},mode=max" \
             .
+
+      - name: Build image (no push)
+        if: steps.vars.outputs.should_push != 'true'
+        run: docker buildx build .
 
   deploy:
     runs-on: ubuntu-latest
@@ -108,12 +131,12 @@ jobs:
           REGISTRY="${{ env.CONTAINER_REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.CONTAINER_REPOSITORY }}"
           TAG="${{ needs.build.outputs.image_tag }}"
 
-          argocd app create --upsert ${APP} --server $ARGOCD_URL \
+          argocd app create --upsert ${APP}-cloudrun --server $ARGOCD_URL \
             --project ${{ inputs.argocd_project }} \
             --repo git@github.com:CellarNode/crossplane-gcloud.git \
-            --path ${{ inputs.deploy_path }}/${APP}/ \
+            --path ${{ inputs.deploy_path }}/${APP}-cloudrun/ \
             --dest-server https://kubernetes.default.svc \
-            --dest-namespace cloudrun \
+            --dest-namespace ${APP}-cloudrun \
             --kustomize-image "app-image=${REGISTRY}/${APP}:${TAG}" \
             --sync-policy auto \
             --sync-option PruneLast=true
