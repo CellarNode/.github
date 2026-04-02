@@ -134,7 +134,7 @@ jobs:
           argocd app create --upsert ${APP}-cloudrun --server $ARGOCD_URL \
             --project ${{ inputs.argocd_project }} \
             --repo git@github.com:CellarNode/crossplane-gcloud.git \
-            --path ${{ inputs.deploy_path }}/${APP}-cloudrun/ \
+            --path ${{ inputs.deploy_path }}/${APP}/ \
             --dest-server https://kubernetes.default.svc \
             --dest-namespace ${APP}-cloudrun \
             --kustomize-image "app-image=${REGISTRY}/${APP}:${TAG}" \
