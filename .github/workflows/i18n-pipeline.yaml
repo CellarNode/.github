@@ -31,6 +31,9 @@ on:
     secrets:
       GOOGLE_API_KEY:
         required: true
+      NPM_TOKEN:
+        description: 'npm token used for private @cellarnode/* package installs (.npmrc env-var substitution)'
+        required: false
 
 jobs:
   sync-translate:
@@ -38,6 +41,11 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+    # Forward NPM_TOKEN so .npmrc env-var substitution finds it during
+    # pnpm install. Caller side declares the secret via `secrets: inherit`
+    # (or an explicit `secrets: NPM_TOKEN: ${{ secrets.NPM_TOKEN }}` map).
+    env:
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
 
     steps:
       - uses: actions/checkout@v4

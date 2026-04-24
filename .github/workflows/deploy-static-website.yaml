@@ -41,6 +41,10 @@ on:
         required: false
         type: string
         default: ""
+    secrets:
+      NPM_TOKEN:
+        description: "npm token used for private @cellarnode/* package installs (.npmrc env-var substitution)"
+        required: false
 
 env:
   PROJECT_ID: festive-terrain-478011-h0
@@ -52,6 +56,11 @@ jobs:
     runs-on: self-hosted-k8s
     container:
       image: ubuntu:24.04
+    # Forward NPM_TOKEN so .npmrc env-var substitution finds it during
+    # pnpm install. Caller side declares the secret via `secrets: inherit`
+    # (or an explicit `secrets: NPM_TOKEN: ${{ secrets.NPM_TOKEN }}` map).
+    env:
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
 
     permissions:
       contents: read
