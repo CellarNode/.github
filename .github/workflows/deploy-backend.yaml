@@ -37,7 +37,7 @@ on:
         default: ""
     secrets:
       NPM_TOKEN:
-        description: "npm token forwarded into Docker build as --build-arg for private @cellarnode/* installs"
+        description: "npm token forwarded into Docker build via --secret for private @cellarnode/* installs"
         required: false
 
 env:
@@ -89,10 +89,6 @@ jobs:
 
       - name: Build and push images
         shell: bash
-        # Forward NPM_TOKEN as a Docker build-arg so the Dockerfile's
-        # bun install steps can resolve private @cellarnode/* packages.
-        # Dockerfile-side wiring lives in cellarnode-backend-v2/Dockerfile
-        # (ARG NPM_TOKEN + ENV NPM_TOKEN + COPY .npmrc).
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
@@ -118,7 +114,7 @@ jobs:
               --push \
               --tag "${IMAGE}:${TAG}" \
               --tag "${IMAGE}:latest" \
-              --build-arg "NPM_TOKEN=${NPM_TOKEN}" \
+              --secret id=NPM_TOKEN,env=NPM_TOKEN \
               --cache-from="type=registry,ref=${CACHE_REF}" \
               $CACHE_TO_ARG \
               .
