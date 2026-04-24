@@ -13,6 +13,10 @@ on:
         required: false
         type: string
         default: '22'
+    secrets:
+      NPM_TOKEN:
+        description: 'npm token used for private @cellarnode/* package installs (.npmrc env-var substitution)'
+        required: false
 
 jobs:
   instrument:
@@ -20,6 +24,11 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+    # Forward NPM_TOKEN so .npmrc env-var substitution finds it during
+    # pnpm install. Caller side declares the secret via `secrets: inherit`
+    # (or an explicit `secrets: NPM_TOKEN: ${{ secrets.NPM_TOKEN }}` map).
+    env:
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
 
     steps:
       - uses: actions/checkout@v4
