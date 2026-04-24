@@ -1,0 +1,31 @@
+.github/workflows/i18n-lint.yaml
+  864c769c3df69f19 11-14,21-25
+.github/workflows/i18n-instrument.yaml
+  864c769c3df69f19 16-19,27-31
+.github/workflows/deploy-static-website.yaml
+  864c769c3df69f19 44-47,59-63
+.github/workflows/deploy-backend.yaml
+  864c769c3df69f19 38-41,92-97,121
+.github/workflows/i18n-pipeline.yaml
+  864c769c3df69f19 34-36,44-48
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.4",
+  "base_commit_sha": "ab902e643172eb2d390fa75fa3a91eb3f8672e87",
+  "prompts": {
+    "864c769c3df69f19": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2aaadcc1-6ad5-4658-b7a8-89677977362e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "mjnong",
+      "messages": [],
+      "total_additions": 46,
+      "total_deletions": 0,
+      "accepted_lines": 46,
+      "overriden_lines": 0
+    }
+  }
+}
