@@ -53,9 +53,7 @@ env:
 jobs:
   build-deploy:
     if: github.event.action != 'closed'
-    runs-on: self-hosted-k8s
-    container:
-      image: ubuntu:24.04
+    runs-on: ubuntu-latest
     # Forward NPM_TOKEN so .npmrc env-var substitution finds it during
     # pnpm install. Caller side declares the secret via `secrets: inherit`
     # (or an explicit `secrets: NPM_TOKEN: ${{ secrets.NPM_TOKEN }}` map).
