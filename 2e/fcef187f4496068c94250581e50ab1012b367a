@@ -1,0 +1,14 @@
+.github/workflows/deploy-static-website.yaml
+  h_34c0b4ede6029f 56
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.4",
+  "base_commit_sha": "2efcef187f4496068c94250581e50ab1012b367a",
+  "prompts": {},
+  "humans": {
+    "h_34c0b4ede6029f": {
+      "author": "mjnong"
+    }
+  }
+}
