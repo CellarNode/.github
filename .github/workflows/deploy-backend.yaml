@@ -108,12 +108,19 @@ jobs:
               FIRST=false
             fi
 
+            # CEL-175: BACKEND_GIT_SHA is consumed by Dockerfiles that declare
+            # `ARG BACKEND_GIT_SHA` so the runtime can stamp the deployed
+            # commit into application metadata (e.g. cellarnode-backend-v2's
+            # OpenAPI emit at info["x-backend-sha"], CEL-174). Universal-safe:
+            # if a service's Dockerfile doesn't declare the ARG, docker
+            # buildx warns about an unused build-arg but the build succeeds.
             docker buildx build \
               --file ./Dockerfile \
               --target "$TARGET" \
               --push \
               --tag "${IMAGE}:${TAG}" \
               --tag "${IMAGE}:latest" \
+              --build-arg "BACKEND_GIT_SHA=${GITHUB_SHA}" \
               --secret id=NPM_TOKEN,env=NPM_TOKEN \
               --cache-from="type=registry,ref=${CACHE_REF}" \
               $CACHE_TO_ARG \
