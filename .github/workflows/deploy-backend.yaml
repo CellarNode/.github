@@ -120,7 +120,7 @@ jobs:
               --push \
               --tag "${IMAGE}:${TAG}" \
               --tag "${IMAGE}:latest" \
-              --build-arg BACKEND_GIT_SHA=${GITHUB_SHA} \
+              --build-arg "BACKEND_GIT_SHA=${GITHUB_SHA}" \
               --secret id=NPM_TOKEN,env=NPM_TOKEN \
               --cache-from="type=registry,ref=${CACHE_REF}" \
               $CACHE_TO_ARG \
