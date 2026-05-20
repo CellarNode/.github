@@ -50,6 +50,34 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # CEL-384 prong 1b: catch the most-common failure mode — caller did not
+      # forward NPM_TOKEN but the repo has private @cellarnode/* deps — and
+      # fail fast with a named-secret error instead of the npm-404 misdirection
+      # that ate ~20 days of importer (CEL-382) and ~7 days of producer (CEL-361).
+      # Public-only consumers (e.g., cellarnode-public-site, which uses only
+      # @cellarnode/i18n / @cellarnode/auth / @cellarnode/beverage-utils) skip
+      # this gate because their deps install from public npm without auth.
+      - name: Verify NPM_TOKEN forwarding for private deps
+        run: |
+          set -eu
+          PRIVATE_REFS=$(find . -name package.json -not -path '*/node_modules/*' \
+            -exec grep -l '"@cellarnode/\(ui\|finance\)"' {} + 2>/dev/null || true)
+          if [ -n "$PRIVATE_REFS" ]; then
+            if [ -z "${NPM_TOKEN:-}" ]; then
+              echo "::error title=NPM_TOKEN missing::Private @cellarnode/* dep detected but NPM_TOKEN is empty."
+              echo "::error::Found in:"
+              echo "$PRIVATE_REFS" | sed 's/^/::error::  /'
+              echo "::error::Caller workflow must forward NPM_TOKEN via 'secrets: inherit' (recommended) or an explicit secrets map."
+              echo "::error::See CEL-361 / CEL-382 / CEL-383 for the recurring failure mode this prevents."
+              exit 1
+            fi
+            echo "Private @cellarnode/* deps detected in:"
+            echo "$PRIVATE_REFS" | sed 's/^/  /'
+            echo "NPM_TOKEN forwarding verified."
+          else
+            echo "No private @cellarnode/* deps detected; NPM_TOKEN not required for this build."
+          fi
+
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
@@ -109,3 +137,17 @@ jobs:
             --body "Automated i18n pipeline: synced locale files, translated via Gemini, regenerated types." \
             --base "${GITHUB_REF_NAME}" \
             --head "$BRANCH"
+
+  # CEL-384 prong 2: alert on workflow failure so the next silent-failure
+  # incident becomes a 15-minute discovery instead of 7-20 days (CEL-361 /
+  # CEL-382). Routes through the existing discord-notify reusable so it
+  # lands in the same Discord forum the team already monitors.
+  alert-on-failure:
+    needs: sync-translate
+    if: ${{ failure() }}
+    uses: ./.github/workflows/discord-notify.yaml
+    with:
+      event: ci_failure
+      status: failure
+      tags: infra
+    secrets: inherit

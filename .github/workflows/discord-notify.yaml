@@ -4,7 +4,7 @@ on:
   workflow_call:
     inputs:
       event:
-        description: "Event type: thread_open, thread_update, thread_close, deploy"
+        description: "Event type: thread_open, thread_update, thread_close, deploy, ci_failure"
         required: true
         type: string
       status:
@@ -272,6 +272,43 @@ jobs:
                   timestamp: new Date().toISOString()
                 }]
               }, meta.threadId);
+
+            } else if (event === 'ci_failure') {
+              // CEL-384 — generic CI-failure alert posted by reusable workflows
+              // when an upstream job fails. Currently called by i18n-pipeline.yaml
+              // (CEL-361 systemic follow-up). Posts a new forum thread per
+              // failure; future iteration can add streak dedupe.
+              const workflowName = context.workflow || 'workflow';
+              const eventName = context.eventName || 'unknown';
+              const triggerRef = ref || context.ref || 'unknown';
+
+              await discordPost({
+                content: `❌ **CI failure** — ${repo}`,
+                embeds: [{
+                  title: `${workflowName} failed in ${repo}`,
+                  url: runUrl,
+                  description: [
+                    `**Workflow:** \`${workflowName}\``,
+                    `**Trigger:** \`${eventName}\` on \`${triggerRef}\``,
+                    `**Actor:** ${actor}`,
+                    `**Commit:** \`${sha}\``,
+                    ``,
+                    `[View Run](${runUrl})`,
+                  ].join('\n'),
+                  color: 15158332, // red
+                  footer: { text: repo },
+                  timestamp: new Date().toISOString()
+                }],
+                components: [{
+                  type: 1,
+                  components: [
+                    { type: 2, style: 5, label: "View Run", url: runUrl },
+                    { type: 2, style: 5, label: "View Repo", url: repoUrl }
+                  ]
+                }],
+                thread_name: `❌ ${workflowName} failure — ${repo} ${sha}`,
+                ...(appliedTags.length && { applied_tags: appliedTags })
+              });
 
             } else if (event === 'deploy') {
               const color = status === 'success' ? 3066993 : status === 'failure' ? 15158332 : 10070709;
