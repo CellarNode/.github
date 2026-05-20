@@ -33,7 +33,14 @@ on:
         required: true
       NPM_TOKEN:
         description: 'npm token used for private @cellarnode/* package installs (.npmrc env-var substitution)'
-        required: false
+        # CEL-384 Prong 1a: flipped to required:true after CEL-361/382/383
+        # confirmed all current callers (producer, importer, public-site) use
+        # `secrets: inherit`, which auto-forwards NPM_TOKEN from org-level
+        # secrets regardless of whether the consumer needs it at runtime.
+        # GitHub Actions' native launch-time validation gives a clearer
+        # named-secret error than the in-job pre-flight below, which now acts
+        # as defense-in-depth for the "secret declared but empty" case.
+        required: true
 
 jobs:
   sync-translate:
@@ -142,6 +149,14 @@ jobs:
   # incident becomes a 15-minute discovery instead of 7-20 days (CEL-361 /
   # CEL-382). Routes through the existing discord-notify reusable so it
   # lands in the same Discord forum the team already monitors.
+  #
+  # `workflow_name` is passed explicitly because `context.workflow` inside the
+  # nested reusable resolves to "Discord Notification" (the reusable's own
+  # name), not the failing pipeline's name. Caught by CEL-384 reviewers A + B.
+  #
+  # No `secrets: inherit` — discord-notify reads only `vars.DISCORD_WEBHOOK_URL`
+  # (a variable, not a secret) and uses the default `github.token` for API
+  # calls in non-`ci_failure` events. Minimum-privilege per CodeRabbit.
   alert-on-failure:
     needs: sync-translate
     if: ${{ failure() }}
@@ -150,4 +165,4 @@ jobs:
       event: ci_failure
       status: failure
       tags: infra
-    secrets: inherit
+      workflow_name: ${{ github.workflow }}

@@ -22,6 +22,11 @@ on:
         required: false
         type: string
         default: ""
+      workflow_name:
+        description: "Override for context.workflow — required when invoked from a nested reusable workflow because context.workflow then resolves to this reusable's own name, not the calling pipeline's"
+        required: false
+        type: string
+        default: ""
 
 jobs:
   notify:
@@ -35,6 +40,7 @@ jobs:
           STATUS: ${{ inputs.status }}
           PREVIEW_URL: ${{ inputs.preview_url }}
           TAGS: ${{ inputs.tags }}
+          WORKFLOW_NAME: ${{ inputs.workflow_name }}
         with:
           script: |
             const webhook = process.env.WEBHOOK_URL?.replace(/\/+$/, '');
@@ -277,8 +283,13 @@ jobs:
               // CEL-384 — generic CI-failure alert posted by reusable workflows
               // when an upstream job fails. Currently called by i18n-pipeline.yaml
               // (CEL-361 systemic follow-up). Posts a new forum thread per
-              // failure; future iteration can add streak dedupe.
-              const workflowName = context.workflow || 'workflow';
+              // failure; streak dedupe tracked in CEL-385.
+              //
+              // `workflow_name` must be passed in by the caller — `context.workflow`
+              // inside a nested reusable resolves to THIS reusable's own name
+              // ("Discord Notification"), not the calling pipeline. Caught by
+              // CEL-384 reviewers A + B.
+              const workflowName = process.env.WORKFLOW_NAME || context.workflow || 'workflow';
               const eventName = context.eventName || 'unknown';
               const triggerRef = ref || context.ref || 'unknown';
 
