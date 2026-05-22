@@ -119,8 +119,17 @@ jobs:
             --context "${{ inputs.context }}" \
             $FORCE_FLAG
 
+      # CEL-434 — `|| true` REMOVED. Previously this step silently swallowed
+      # failures. When `i18next-cli types` failed (e.g., because the consuming
+      # repo lacked `i18next-cli` as a devDep so the CLI couldn't resolve the
+      # project-specific TS config), the workflow continued past this step
+      # without regenerating `src/@types/resources.d.ts`. Bot PRs then landed
+      # with locale changes but no regenerated types — producing the
+      # CEL-417 producer-dashboard scenario where typed i18n key checking
+      # silently degraded over weeks. Failure here now correctly turns the
+      # whole pipeline red so the regression surfaces at PR time.
       - name: Generate TypeScript types
-        run: npx i18next-cli types || true
+        run: npx i18next-cli types
 
       - name: Check for changes
         id: diff
