@@ -1,5 +1,24 @@
 name: i18n — Sync + Translate
 
+# Consumer requirements (CEL-436):
+#
+#   1. `i18next-cli` MUST be present in the consumer's `devDependencies`
+#      (pnpm exec resolves to the lockfile-pinned version; no global
+#      fallback). Current consumers: producer-dashboard, importer-
+#      dashboard, cellarnode-public-site.
+#
+#   2. `polyglot-i18n` is installed globally by this workflow — no
+#      consumer needs it as a devDep (translation-only, no project TS
+#      config dependency). CEL-XXX tracks promoting it to a devDep for
+#      lockfile symmetry.
+#
+#   3. The caller MUST forward `GOOGLE_API_KEY` AND `NPM_TOKEN` via
+#      `secrets: inherit` (CEL-361). NPM_TOKEN is needed for pnpm
+#      install to authenticate against private `@cellarnode/*` packages.
+#
+# Misconfiguration surfaces as a RED workflow run (CEL-434 removed the
+# `|| true` that previously masked these failures).
+
 on:
   workflow_call:
     inputs:
