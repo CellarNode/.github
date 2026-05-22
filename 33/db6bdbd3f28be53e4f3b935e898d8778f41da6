@@ -1,0 +1,20 @@
+.github/workflows/i18n-pipeline.yaml
+  s_8a55c7e19874d2::t_731b3457a1acd0 142-144,146
+  s_8a55c7e19874d2::t_167c0e388059fd 99-106,108-112,114
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "33db6bdbd3f28be53e4f3b935e898d8778f41da6",
+  "prompts": {},
+  "sessions": {
+    "s_8a55c7e19874d2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "438b7db8-44c6-45b7-a485-f8c3a3beca21",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "mjnong <marcusnagy@icloud.com>"
+    }
+  }
+}
