@@ -96,11 +96,22 @@ jobs:
       - name: Install project dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Install i18n tools
-        run: npm install -g i18next-cli polyglot-i18n
+      # CEL-436 — drop `i18next-cli` from the global install. All 3 current
+      # consumers (producer, importer, public-site) have `i18next-cli` as a
+      # local devDep, so the global install was redundant + risked floating
+      # off the lockfile-pinned version when `npx` resolved to the global.
+      # `polyglot-i18n` stays globally installed — no consumer has it as a
+      # devDep + it's a translation-only tool (no project TS config required).
+      - name: Install polyglot-i18n (not in consumer devDeps)
+        run: npm install -g polyglot-i18n
 
+      # CEL-436 — `pnpm exec` (not `npx`) resolves to the consumer's local
+      # `i18next-cli` devDep, so the workflow uses the lockfile-pinned
+      # version deterministically. `npx` would silently install from the
+      # live registry if the global install were missing (which is now the
+      # case post-CEL-436).
       - name: Sync locale files
-        run: npx i18next-cli sync
+        run: pnpm exec i18next-cli sync
 
       - name: Translate new/changed keys
         env:
@@ -128,8 +139,11 @@ jobs:
       # CEL-417 producer-dashboard scenario where typed i18n key checking
       # silently degraded over weeks. Failure here now correctly turns the
       # whole pipeline red so the regression surfaces at PR time.
+      #
+      # CEL-436 — `npx` → `pnpm exec` per the same rationale as the sync
+      # step above. Uses the consumer's locked i18next-cli devDep.
       - name: Generate TypeScript types
-        run: npx i18next-cli types
+        run: pnpm exec i18next-cli types
 
       - name: Check for changes
         id: diff
