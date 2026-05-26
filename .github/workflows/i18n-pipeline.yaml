@@ -1,18 +1,13 @@
 name: i18n — Sync + Translate
 
-# Consumer requirements (CEL-436):
+# Consumer requirements (CEL-436 / CEL-449):
 #
-#   1. `i18next-cli` MUST be present in the consumer's `devDependencies`
-#      (pnpm exec resolves to the lockfile-pinned version; no global
-#      fallback). Current consumers: producer-dashboard, importer-
-#      dashboard, cellarnode-public-site.
+#   1. `i18next-cli` AND `polyglot-i18n` MUST be present in the
+#      consumer's `devDependencies`. pnpm exec resolves to the
+#      lockfile-pinned versions; no global fallback. Current consumers:
+#      producer-dashboard, importer-dashboard, cellarnode-public-site.
 #
-#   2. `polyglot-i18n` is installed globally by this workflow — no
-#      consumer needs it as a devDep (translation-only, no project TS
-#      config dependency). CEL-XXX tracks promoting it to a devDep for
-#      lockfile symmetry.
-#
-#   3. The caller MUST forward `GOOGLE_API_KEY` AND `NPM_TOKEN` via
+#   2. The caller MUST forward `GOOGLE_API_KEY` AND `NPM_TOKEN` via
 #      `secrets: inherit` (CEL-361). NPM_TOKEN is needed for pnpm
 #      install to authenticate against private `@cellarnode/*` packages.
 #
@@ -115,20 +110,17 @@ jobs:
       - name: Install project dependencies
         run: pnpm install --frozen-lockfile
 
-      # CEL-436 — drop `i18next-cli` from the global install. All 3 current
-      # consumers (producer, importer, public-site) have `i18next-cli` as a
-      # local devDep, so the global install was redundant + risked floating
-      # off the lockfile-pinned version when `npx` resolved to the global.
-      # `polyglot-i18n` stays globally installed — no consumer has it as a
-      # devDep + it's a translation-only tool (no project TS config required).
-      - name: Install polyglot-i18n (not in consumer devDeps)
-        run: npm install -g polyglot-i18n
-
-      # CEL-436 — `pnpm exec` (not `npx`) resolves to the consumer's local
-      # `i18next-cli` devDep, so the workflow uses the lockfile-pinned
-      # version deterministically. `npx` would silently install from the
-      # live registry if the global install were missing (which is now the
-      # case post-CEL-436).
+      # CEL-449 — drop the `npm install -g polyglot-i18n` step. All 3
+      # consumers now have `polyglot-i18n` as a local devDep (PR #172,
+      # #89, #22), so the translate step below can resolve via `pnpm
+      # exec` against the lockfile-pinned version. Same hardening as
+      # CEL-436 did for `i18next-cli`. With both tools lockfile-pinned,
+      # this workflow no longer carries any floating npm dependencies.
+      #
+      # CEL-436 — `pnpm exec` (not `npx`) resolves to the consumer's
+      # local `i18next-cli` devDep, so the workflow uses the lockfile-
+      # pinned version deterministically. `npx` would silently install
+      # from the live registry if the global install were missing.
       - name: Sync locale files
         run: pnpm exec i18next-cli sync
 
@@ -141,7 +133,10 @@ jobs:
             FORCE_FLAG="--force"
           fi
 
-          polyglot-i18n translate \
+          # CEL-449 — `pnpm exec` resolves to the consumer's local
+          # `polyglot-i18n` devDep (lockfile-pinned). Was a bare
+          # invocation reading from the global install before CEL-449.
+          pnpm exec polyglot-i18n translate \
             --input "./${{ inputs.locales_path }}/en" \
             --output-languages "${{ inputs.target_languages }}" \
             --provider gemini \
