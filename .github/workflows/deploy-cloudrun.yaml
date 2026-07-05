@@ -139,6 +139,7 @@ jobs:
             --dest-namespace ${APP}-cloudrun \
             --kustomize-image "app-image=${REGISTRY}/${APP}:${TAG}" \
             --sync-policy auto \
+            --sync-option CreateNamespace=true \
             --sync-option PruneLast=true
 
   # --- Discord thread lifecycle ---
