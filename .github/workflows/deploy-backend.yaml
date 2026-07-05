@@ -65,6 +65,13 @@ jobs:
     outputs:
       image_tag: ${{ steps.vars.outputs.image_tag }}
 
+    # ARC's kubernetes-mode hook runs `run:` steps with plain `sh` (dash),
+    # which chokes on bashisms like ${GITHUB_SHA::7} ("Bad substitution").
+    # GitHub-hosted runners defaulted to bash — pin it explicitly.
+    defaults:
+      run:
+        shell: bash
+
     steps:
       - uses: actions/checkout@v4
 
