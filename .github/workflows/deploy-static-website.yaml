@@ -53,7 +53,13 @@ env:
 jobs:
   build-deploy:
     if: github.event.action != 'closed'
-    runs-on: ubuntu-latest
+    # Self-hosted: site builds were the org's remaining paid-GHA-minutes bulk.
+    # Prebaked ci-runner image = no per-job node/pnpm/gcloud downloads; npm
+    # rides the in-region AR mirror. All repos are private, and fork PRs are
+    # already build-only via the should_deploy flag.
+    runs-on: self-hosted-k8s
+    container:
+      image: europe-north1-docker.pkg.dev/festive-terrain-478011-h0/beveriq/ci-runner:latest
     outputs:
       deployed: ${{ steps.flags.outputs.should_deploy }}
     # Forward NPM_TOKEN so .npmrc env-var substitution finds it during
@@ -88,13 +94,8 @@ jobs:
           echo "should_deploy=true" >> "$GITHUB_OUTPUT"
         fi
 
-    - name: Set up Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: ${{ inputs.node_version }}
-
-    - name: Setup pnpm
-      uses: pnpm/action-setup@v4
+    # node22 + pnpm (corepack) come prebaked in the ci-runner image; the
+    # node_version input is no longer consulted (all sites are on 22).
 
     - name: Install dependencies
       run: pnpm install ${{ inputs.frozen_lockfile && '--frozen-lockfile' || '--no-frozen-lockfile' }}
@@ -131,6 +132,8 @@ jobs:
     - name: Set up Cloud SDK
       if: steps.flags.outputs.should_deploy == 'true'
       uses: google-github-actions/setup-gcloud@v2
+      with:
+        skip_install: true # gcloud prebaked in ci-runner image
 
     - name: Deploy to production
       if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -189,7 +192,7 @@ jobs:
     if: github.event_name == 'pull_request' && github.event.action == 'closed'
     runs-on: self-hosted-k8s
     container:
-      image: ubuntu:24.04
+      image: europe-north1-docker.pkg.dev/festive-terrain-478011-h0/beveriq/ci-runner:latest
 
     permissions:
       contents: read
@@ -205,6 +208,8 @@ jobs:
 
     - name: Set up Cloud SDK
       uses: google-github-actions/setup-gcloud@v2
+      with:
+        skip_install: true # gcloud prebaked in ci-runner image
 
     - name: Delete preview
       run: |
