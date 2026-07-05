@@ -80,6 +80,10 @@ jobs:
             fi
           fi
 
+      # Plain TCP is accepted here: private single-tenant cluster, and the
+      # legacy GKE dataplane doesn't enforce NetworkPolicy. Revisit (TLS via
+      # --driver-opt cacert/cert/key, or DPv2 + NetworkPolicy) if the cluster
+      # ever becomes multi-tenant.
       - name: Connect to in-cluster buildkitd
         run: docker buildx create --name k8s-buildkit --driver remote tcp://buildkitd.buildkit.svc.cluster.local:1234 --use
 
@@ -101,9 +105,10 @@ jobs:
 
       - name: Build and push images
         shell: bash
+        env:
+          TARGETS: ${{ inputs.docker_targets }}
+          APP: ${{ inputs.app_name }}
         run: |
-          TARGETS='${{ inputs.docker_targets }}'
-          APP='${{ inputs.app_name }}'
           TAG='${{ steps.vars.outputs.image_tag }}'
           PUSH_LATEST='${{ steps.vars.outputs.push_latest }}'
           REGISTRY="${{ env.CONTAINER_REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.CONTAINER_REPOSITORY }}"
@@ -150,8 +155,9 @@ jobs:
 
       - name: Build images (no push)
         shell: bash
+        env:
+          TARGETS: ${{ inputs.docker_targets }}
         run: |
-          TARGETS='${{ inputs.docker_targets }}'
           for TARGET in $(echo "$TARGETS" | jq -r '.[]'); do
             docker buildx build \
               --file ./Dockerfile \
@@ -179,10 +185,11 @@ jobs:
         env:
           ARGOCD_AUTH_TOKEN: ${{ vars.ARGO_API_KEY }}
           ARGOCD_URL: argo.anli.es
+        env:
+          APP: ${{ inputs.app_name }}
+          FLAVOR: ${{ matrix.flavor }}
+          WORKER_PREFIX: ${{ inputs.worker_image_prefix }}
         run: |
-          APP='${{ inputs.app_name }}'
-          FLAVOR='${{ matrix.flavor }}'
-          WORKER_PREFIX='${{ inputs.worker_image_prefix }}'
           REGISTRY="${{ env.CONTAINER_REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.CONTAINER_REPOSITORY }}"
           TAG="${{ needs.build.outputs.image_tag }}"
 
@@ -219,16 +226,18 @@ jobs:
       tags: ${{ inputs.discord_tags }}
 
   discord-build-update:
-    needs: [build, discord-thread-open]
+    needs: [build, build-fork, discord-thread-open]
     if: >-
       always() &&
       github.event_name == 'pull_request' &&
       github.event.action != 'closed' &&
-      needs.build.result != 'cancelled'
+      needs.build.result != 'cancelled' &&
+      needs['build-fork'].result != 'cancelled'
     uses: CellarNode/.github/.github/workflows/discord-notify.yaml@main
     with:
       event: thread_update
-      status: ${{ needs.build.result }}
+      # same-repo PRs run `build`; fork PRs run `build-fork` — report whichever ran
+      status: ${{ needs.build.result != 'skipped' && needs.build.result || needs['build-fork'].result }}
 
   discord-thread-close:
     if: github.event_name == 'pull_request' && github.event.action == 'closed'
