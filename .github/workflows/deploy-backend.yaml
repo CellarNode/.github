@@ -199,7 +199,6 @@ jobs:
         env:
           ARGOCD_AUTH_TOKEN: ${{ vars.ARGO_API_KEY }}
           ARGOCD_URL: argo.anli.es
-        env:
           APP: ${{ inputs.app_name }}
           FLAVOR: ${{ matrix.flavor }}
           WORKER_PREFIX: ${{ inputs.worker_image_prefix }}
