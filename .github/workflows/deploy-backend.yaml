@@ -43,8 +43,18 @@ env:
 
 jobs:
   build:
-    if: github.event.action != 'closed'
-    runs-on: ubuntu-latest
+    # Same-repo builds run in-cluster against the shared rootless buildkitd:
+    # AR pulls/pushes and the type=registry buildx cache ride Private Google
+    # Access (free, in-region) instead of billing AR internet egress from
+    # GitHub-hosted runners. Fork PRs are untrusted and must NOT run on
+    # self-hosted runners — they build on GitHub-hosted in build-fork below.
+    if: >-
+      github.event.action != 'closed' &&
+      (github.event_name != 'pull_request' ||
+       github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: self-hosted-k8s
+    container:
+      image: europe-north1-docker.pkg.dev/festive-terrain-478011-h0/beveriq/ci-runner:latest
     permissions:
       contents: read
       id-token: write
@@ -60,15 +70,9 @@ jobs:
           SHORT_SHA="${GITHUB_SHA::7}"
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             echo "image_tag=pr-${{ github.event.pull_request.number }}-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
-            if [ "${{ github.event.pull_request.head.repo.full_name }}" = "${{ github.repository }}" ]; then
-              echo "should_push=true" >> "$GITHUB_OUTPUT"
-            else
-              echo "should_push=false" >> "$GITHUB_OUTPUT"
-            fi
             echo "push_latest=false" >> "$GITHUB_OUTPUT"
           else
             echo "image_tag=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
-            echo "should_push=true" >> "$GITHUB_OUTPUT"
             if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
               echo "push_latest=true" >> "$GITHUB_OUTPUT"
             else
@@ -76,11 +80,10 @@ jobs:
             fi
           fi
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - name: Connect to in-cluster buildkitd
+        run: docker buildx create --name k8s-buildkit --driver remote tcp://buildkitd.buildkit.svc.cluster.local:1234 --use
 
       - name: Authenticate to Google Cloud
-        if: steps.vars.outputs.should_push == 'true'
         id: auth
         uses: google-github-actions/auth@v3
         with:
@@ -90,7 +93,6 @@ jobs:
           token_format: "access_token"
 
       - name: Login to Artifact Registry
-        if: steps.vars.outputs.should_push == 'true'
         uses: docker/login-action@v3
         with:
           registry: ${{ env.CONTAINER_REGISTRY }}
@@ -98,7 +100,6 @@ jobs:
           password: ${{ steps.auth.outputs.access_token }}
 
       - name: Build and push images
-        if: steps.vars.outputs.should_push == 'true'
         shell: bash
         run: |
           TARGETS='${{ inputs.docker_targets }}'
@@ -133,8 +134,21 @@ jobs:
               .
           done
 
+  # Fork PRs: validate the build on GitHub-hosted runners — no cluster access,
+  # no WIF auth, no push. Untrusted code must not reach self-hosted runners.
+  build-fork:
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.action != 'closed' &&
+      github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
       - name: Build images (no push)
-        if: steps.vars.outputs.should_push != 'true'
         shell: bash
         run: |
           TARGETS='${{ inputs.docker_targets }}'
