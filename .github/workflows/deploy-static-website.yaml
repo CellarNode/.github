@@ -54,6 +54,8 @@ jobs:
   build-deploy:
     if: github.event.action != 'closed'
     runs-on: ubuntu-latest
+    outputs:
+      deployed: ${{ steps.flags.outputs.should_deploy }}
     # Forward NPM_TOKEN so .npmrc env-var substitution finds it during
     # pnpm install. Caller side declares the secret via `secrets: inherit`
     # (or an explicit `secrets: NPM_TOKEN: ${{ secrets.NPM_TOKEN }}` map).
@@ -67,6 +69,24 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+
+    # Fork PRs can't authenticate via the repo-bound WIF provider — build
+    # only, skip auth/deploy instead of failing red.
+    - name: Set deploy flags
+      id: flags
+      env:
+        HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+        BASE_REPO: ${{ github.repository }}
+      run: |
+        if [ "${{ github.event_name }}" = "pull_request" ]; then
+          if [ "$HEAD_REPO" = "$BASE_REPO" ]; then
+            echo "should_deploy=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_deploy=false" >> "$GITHUB_OUTPUT"
+          fi
+        else
+          echo "should_deploy=true" >> "$GITHUB_OUTPUT"
+        fi
 
     - name: Set up Node.js
       uses: actions/setup-node@v4
@@ -100,6 +120,7 @@ jobs:
         BUILD_ENV_VARS: ${{ inputs.build_env }}
 
     - name: Authenticate to Google Cloud
+      if: steps.flags.outputs.should_deploy == 'true'
       id: auth
       uses: google-github-actions/auth@v3
       with:
@@ -108,22 +129,28 @@ jobs:
         service_account: 'pipelines@${{ env.PROJECT_ID }}.iam.gserviceaccount.com'
 
     - name: Set up Cloud SDK
+      if: steps.flags.outputs.should_deploy == 'true'
       uses: google-github-actions/setup-gcloud@v2
 
     - name: Deploy to production
       if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      env:
+        WEBSITE: ${{ inputs.website }}
       run: |
         gcloud storage rsync --recursive --checksums-only --delete-unmatched-destination-objects \
-          ./dist gs://${{ env.GCS_BUCKET }}/${{ inputs.website }}
+          ./dist "gs://${GCS_BUCKET}/${WEBSITE}"
 
     - name: Deploy preview
-      if: github.event_name == 'pull_request'
+      if: steps.flags.outputs.should_deploy == 'true' && github.event_name == 'pull_request'
+      env:
+        WEBSITE_SLUG: ${{ inputs.website_slug }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
       run: |
         gcloud storage rsync --recursive --checksums-only --delete-unmatched-destination-objects \
-          ./dist gs://${{ env.GCS_BUCKET }}/preview/${{ inputs.website_slug }}/pr${{ github.event.pull_request.number }}
+          ./dist "gs://${GCS_BUCKET}/preview/${WEBSITE_SLUG}/pr${PR_NUMBER}"
 
     - name: Comment preview URL
-      if: github.event_name == 'pull_request'
+      if: steps.flags.outputs.should_deploy == 'true' && github.event_name == 'pull_request'
       uses: actions/github-script@v7
       with:
         script: |
@@ -203,7 +230,8 @@ jobs:
     with:
       event: thread_update
       status: ${{ needs.build-deploy.result }}
-      preview_url: https://${{ inputs.website_slug }}-pr${{ github.event.pull_request.number }}.dev.cellarnode.com
+      # Fork PRs skip the preview deploy — don't post a dead link
+      preview_url: ${{ needs.build-deploy.outputs.deployed == 'true' && format('https://{0}-pr{1}.dev.cellarnode.com', inputs.website_slug, github.event.pull_request.number) || '' }}
 
   discord-thread-close:
     if: github.event_name == 'pull_request' && github.event.action == 'closed'

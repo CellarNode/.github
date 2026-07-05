@@ -47,8 +47,18 @@ env:
 
 jobs:
   build:
-    if: github.event.action != 'closed'
-    runs-on: ubuntu-latest
+    # Same-repo builds run in-cluster against the shared rootless buildkitd:
+    # AR pulls/pushes and the type=registry buildx cache ride Private Google
+    # Access (free, in-region) instead of billing AR internet egress from
+    # GitHub-hosted runners. Fork PRs are untrusted and must NOT run on
+    # self-hosted runners — they build on GitHub-hosted in build-fork below.
+    if: >-
+      github.event.action != 'closed' &&
+      (github.event_name != 'pull_request' ||
+       github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: self-hosted-k8s
+    container:
+      image: europe-north1-docker.pkg.dev/festive-terrain-478011-h0/beveriq/ci-runner:latest
     permissions:
       contents: read
       id-token: write
@@ -64,12 +74,22 @@ jobs:
           SHORT_SHA=${GITHUB_SHA::7}
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             echo "image_tag=pr-${{ github.event.pull_request.number }}-${SHORT_SHA}" >> $GITHUB_OUTPUT
+            echo "push_latest=false" >> $GITHUB_OUTPUT
           else
             echo "image_tag=${SHORT_SHA}" >> $GITHUB_OUTPUT
+            if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
+              echo "push_latest=true" >> $GITHUB_OUTPUT
+            else
+              echo "push_latest=false" >> $GITHUB_OUTPUT
+            fi
           fi
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      # Plain TCP is accepted here: private single-tenant cluster, and the
+      # legacy GKE dataplane doesn't enforce NetworkPolicy. Revisit (TLS via
+      # --driver-opt cacert/cert/key, or DPv2 + NetworkPolicy) if the cluster
+      # ever becomes multi-tenant.
+      - name: Connect to in-cluster buildkitd
+        run: docker buildx create --name k8s-buildkit --driver remote tcp://buildkitd.buildkit.svc.cluster.local:1234 --use
 
       - name: Authenticate to Google Cloud
         id: auth
@@ -91,10 +111,11 @@ jobs:
         shell: bash
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          TARGETS: ${{ inputs.docker_targets }}
+          APP: ${{ inputs.app_name }}
         run: |
-          TARGETS='${{ inputs.docker_targets }}'
-          APP='${{ inputs.app_name }}'
           TAG='${{ steps.vars.outputs.image_tag }}'
+          PUSH_LATEST='${{ steps.vars.outputs.push_latest }}'
           REGISTRY="${{ env.CONTAINER_REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.CONTAINER_REPOSITORY }}"
           CACHE_REF="${REGISTRY}/${APP}-cache:latest"
 
@@ -114,16 +135,47 @@ jobs:
             # OpenAPI emit at info["x-backend-sha"], CEL-174). Universal-safe:
             # if a service's Dockerfile doesn't declare the ARG, docker
             # buildx warns about an unused build-arg but the build succeeds.
+            TAGS="--tag ${IMAGE}:${TAG}"
+            if [ "$PUSH_LATEST" = "true" ]; then
+              TAGS="${TAGS} --tag ${IMAGE}:latest"
+            fi
+
             docker buildx build \
               --file ./Dockerfile \
               --target "$TARGET" \
               --push \
-              --tag "${IMAGE}:${TAG}" \
-              --tag "${IMAGE}:latest" \
+              ${TAGS} \
               --build-arg "BACKEND_GIT_SHA=${GITHUB_SHA}" \
               --secret id=NPM_TOKEN,env=NPM_TOKEN \
               --cache-from="type=registry,ref=${CACHE_REF}" \
               $CACHE_TO_ARG \
+              .
+          done
+
+  # Fork PRs: validate the build on GitHub-hosted runners — no cluster access,
+  # no WIF auth, no push, no secrets. Untrusted code must not reach
+  # self-hosted runners.
+  build-fork:
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.action != 'closed' &&
+      github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build images (no push)
+        shell: bash
+        env:
+          TARGETS: ${{ inputs.docker_targets }}
+        run: |
+          for TARGET in $(echo "$TARGETS" | jq -r '.[]'); do
+            docker buildx build \
+              --file ./Dockerfile \
+              --target "$TARGET" \
               .
           done
 
@@ -147,10 +199,12 @@ jobs:
         env:
           ARGOCD_AUTH_TOKEN: ${{ vars.ARGO_API_KEY }}
           ARGOCD_URL: argo.anli.es
+        env:
+          APP: ${{ inputs.app_name }}
+          FLAVOR: ${{ matrix.flavor }}
+          WORKER_PREFIX: ${{ inputs.worker_image_prefix }}
+          DOCKER_TARGETS: ${{ inputs.docker_targets }}
         run: |
-          APP='${{ inputs.app_name }}'
-          FLAVOR='${{ matrix.flavor }}'
-          WORKER_PREFIX='${{ inputs.worker_image_prefix }}'
           REGISTRY="${{ env.CONTAINER_REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.CONTAINER_REPOSITORY }}"
           TAG="${{ needs.build.outputs.image_tag }}"
 
@@ -161,7 +215,6 @@ jobs:
           # non-worker target and would mis-route a 2nd app's flavor to the wrong
           # image. Backward-compatible: flavors that don't match a target name
           # (admin, public, worker-*) keep the legacy mapping below.
-          DOCKER_TARGETS='${{ inputs.docker_targets }}'
           if echo "$DOCKER_TARGETS" | jq -e --arg f "$FLAVOR" 'index($f) != null' >/dev/null; then
             IMAGE_NAME="${APP}-${FLAVOR}"
           else
@@ -169,7 +222,7 @@ jobs:
               ${WORKER_PREFIX}-*) IMAGE_NAME="${APP}-${WORKER_PREFIX}" ;;
               *)
                 # Use first non-worker target as the default image
-                FIRST_TARGET=$(echo "$DOCKER_TARGETS" | jq -r '[.[] | select(. != "${{ inputs.worker_image_prefix }}")][0]')
+                FIRST_TARGET=$(echo "$DOCKER_TARGETS" | jq -r --arg w "$WORKER_PREFIX" '[.[] | select(. != $w)][0]')
                 IMAGE_NAME="${APP}-${FIRST_TARGET}"
                 ;;
             esac
@@ -198,16 +251,18 @@ jobs:
       tags: ${{ inputs.discord_tags }}
 
   discord-build-update:
-    needs: [build, discord-thread-open]
+    needs: [build, build-fork, discord-thread-open]
     if: >-
       always() &&
       github.event_name == 'pull_request' &&
       github.event.action != 'closed' &&
-      needs.build.result != 'cancelled'
+      needs.build.result != 'cancelled' &&
+      needs['build-fork'].result != 'cancelled'
     uses: CellarNode/.github/.github/workflows/discord-notify.yaml@main
     with:
       event: thread_update
-      status: ${{ needs.build.result }}
+      # same-repo PRs run `build`; fork PRs run `build-fork` — report whichever ran
+      status: ${{ needs.build.result != 'skipped' && needs.build.result || needs['build-fork'].result }}
 
   discord-thread-close:
     if: github.event_name == 'pull_request' && github.event.action == 'closed'
