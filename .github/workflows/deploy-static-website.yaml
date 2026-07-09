@@ -143,9 +143,23 @@ jobs:
     # otherwise race that migration and the token cache writes, failing
     # upload tasks with "duplicate column name: ..." / "database is locked"
     # and leaving the site partially deployed (2026-07-09, admin dashboard).
+    # Retry with backoff: the WIF token exchange re-fetches the GitHub OIDC
+    # subject token on refresh, and GitHub's Envoy-fronted token endpoint
+    # intermittently rejects under load ("upstream connect error ... reset
+    # reason: overflow" → "Unable to retrieve Identity Pool subject token",
+    # seen 2026-07-09 on run 29019157677). Better to absorb that here than
+    # fail the deploy — this step also doubles as the auth canary before
+    # the parallel rsync.
     - name: Warm gcloud credential cache
       if: steps.flags.outputs.should_deploy == 'true'
-      run: gcloud storage ls "gs://${GCS_BUCKET}" > /dev/null
+      run: |
+        for i in 1 2 3 4 5; do
+          gcloud storage ls "gs://${GCS_BUCKET}" > /dev/null && exit 0
+          echo "gcloud warm-up attempt ${i}/5 failed; retrying in $((i * 10))s"
+          sleep $((i * 10))
+        done
+        echo "gcloud warm-up failed after 5 attempts" >&2
+        exit 1
 
     - name: Deploy to production
       if: github.event_name == 'push' && github.ref == 'refs/heads/main'
