@@ -135,6 +135,18 @@ jobs:
       with:
         skip_install: true # gcloud prebaked in ci-runner image
 
+    # Warm gcloud's SQLite credential/token caches with a single serial call
+    # before the parallel rsync. On ephemeral runners ~/.config/gcloud is
+    # fresh every run, so the first gcloud invocation performs a schema
+    # migration (ALTER TABLE ... ADD COLUMN id_token / regional_access_
+    # boundary*). `gcloud storage rsync` fans out into worker processes that
+    # otherwise race that migration and the token cache writes, failing
+    # upload tasks with "duplicate column name: ..." / "database is locked"
+    # and leaving the site partially deployed (2026-07-09, admin dashboard).
+    - name: Warm gcloud credential cache
+      if: steps.flags.outputs.should_deploy == 'true'
+      run: gcloud storage ls "gs://${GCS_BUCKET}" > /dev/null
+
     - name: Deploy to production
       if: github.event_name == 'push' && github.ref == 'refs/heads/main'
       env:
