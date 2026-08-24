@@ -55,6 +55,9 @@ on:
         # named-secret error than the in-job pre-flight below, which now acts
         # as defense-in-depth for the "secret declared but empty" case.
         required: true
+      DISCORD_WEBHOOK_URL:
+        description: 'Discord webhook credential'
+        required: false
 
 jobs:
   sync-translate:
@@ -191,13 +194,12 @@ jobs:
   # nested reusable resolves to "Discord Notification" (the reusable's own
   # name), not the failing pipeline's name. Caught by CEL-384 reviewers A + B.
   #
-  # No `secrets: inherit` — discord-notify reads only `vars.DISCORD_WEBHOOK_URL`
-  # (a variable, not a secret) and uses the default `github.token` for API
-  # calls in non-`ci_failure` events. Minimum-privilege per CodeRabbit.
   alert-on-failure:
     needs: sync-translate
     if: ${{ failure() }}
     uses: ./.github/workflows/discord-notify.yaml
+    secrets:
+      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
     with:
       event: ci_failure
       status: failure

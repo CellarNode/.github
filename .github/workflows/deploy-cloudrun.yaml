@@ -22,6 +22,10 @@ on:
         required: false
         type: string
         default: ""
+    secrets:
+      DISCORD_WEBHOOK_URL:
+        description: "Discord webhook credential"
+        required: false
 
 env:
   CONTAINER_REGISTRY: europe-north1-docker.pkg.dev
@@ -146,7 +150,9 @@ jobs:
 
   discord-thread-open:
     if: github.event_name == 'pull_request' && github.event.action == 'opened'
-    uses: CellarNode/.github/.github/workflows/discord-notify.yaml@main
+    uses: ./.github/workflows/discord-notify.yaml
+    secrets:
+      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
     with:
       event: thread_open
       tags: ${{ inputs.discord_tags }}
@@ -158,14 +164,18 @@ jobs:
       github.event_name == 'pull_request' &&
       github.event.action != 'closed' &&
       needs.build.result != 'cancelled'
-    uses: CellarNode/.github/.github/workflows/discord-notify.yaml@main
+    uses: ./.github/workflows/discord-notify.yaml
+    secrets:
+      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
     with:
       event: thread_update
       status: ${{ needs.build.result }}
 
   discord-thread-close:
     if: github.event_name == 'pull_request' && github.event.action == 'closed'
-    uses: CellarNode/.github/.github/workflows/discord-notify.yaml@main
+    uses: ./.github/workflows/discord-notify.yaml
+    secrets:
+      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
     with:
       event: thread_close
       status: ${{ github.event.pull_request.merged && 'merged' || 'closed' }}
@@ -173,7 +183,9 @@ jobs:
   discord-deploy:
     needs: deploy
     if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
-    uses: CellarNode/.github/.github/workflows/discord-notify.yaml@main
+    uses: ./.github/workflows/discord-notify.yaml
+    secrets:
+      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
     with:
       event: deploy
       status: ${{ needs.deploy.result }}
