@@ -1,0 +1,23 @@
+.github/workflows/i18n-pipeline.yaml
+  s_8a55c7e19874d2::t_3762cef390190e 53-80
+  s_8a55c7e19874d2::t_b0c0f885391a72 140-153
+.github/workflows/discord-notify.yaml
+  s_8a55c7e19874d2::t_c4c6b55e1a9ac2 276-312
+  s_8a55c7e19874d2::t_1a428a86368a29 7
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.10",
+  "base_commit_sha": "db11fa67c8f7960ca14859fbff18895339c01c89",
+  "prompts": {},
+  "sessions": {
+    "s_8a55c7e19874d2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "438b7db8-44c6-45b7-a485-f8c3a3beca21",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "mjnong <marcusnagy@icloud.com>"
+    }
+  }
+}

@@ -1,0 +1,19 @@
+.github/workflows/deploy-backend.yaml
+  s_b3eafea437eee0::t_9466b5d0a1d8fb 123
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.1",
+  "base_commit_sha": "d4e3ae31d1487d3c5c46d60b4f7dbe4d7c1b8ee5",
+  "prompts": {},
+  "sessions": {
+    "s_b3eafea437eee0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "09983fdf-7f4c-4d8a-818d-e059e20d847a",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "mjnong <marcusnagy@icloud.com>"
+    }
+  }
+}
