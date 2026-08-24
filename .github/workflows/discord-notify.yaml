@@ -27,15 +27,19 @@ on:
         required: false
         type: string
         default: ""
+    secrets:
+      DISCORD_WEBHOOK_URL:
+        description: "Discord webhook credential"
+        required: false
 
 jobs:
   notify:
     runs-on: ubuntu-latest
     steps:
       - name: Discord notification
-        uses: actions/github-script@v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         env:
-          WEBHOOK_URL: ${{ vars.DISCORD_WEBHOOK_URL }}
+          WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           EVENT: ${{ inputs.event }}
           STATUS: ${{ inputs.status }}
           PREVIEW_URL: ${{ inputs.preview_url }}
@@ -43,7 +47,10 @@ jobs:
           WORKFLOW_NAME: ${{ inputs.workflow_name }}
         with:
           script: |
-            const webhook = process.env.WEBHOOK_URL?.replace(/\/+$/, '');
+            const rawWebhook = process.env.WEBHOOK_URL;
+            if (rawWebhook) core.setSecret(rawWebhook);
+            const webhook = rawWebhook?.replace(/\/+$/, '');
+            if (webhook) core.setSecret(webhook);
             if (!webhook) {
               core.warning('DISCORD_WEBHOOK_URL not set, skipping');
               return;
@@ -133,8 +140,7 @@ jobs:
               });
 
               if (!res.ok) {
-                const text = await res.text();
-                core.warning(`Discord POST failed: ${res.status} ${text}`);
+                core.warning(`Discord POST failed: ${res.status}`);
                 return null;
               }
               return res.json();
@@ -151,8 +157,7 @@ jobs:
               });
 
               if (!res.ok) {
-                const text = await res.text();
-                core.warning(`Discord PATCH failed: ${res.status} ${text}`);
+                core.warning(`Discord PATCH failed: ${res.status}`);
                 return null;
               }
               return res.json();

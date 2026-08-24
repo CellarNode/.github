@@ -45,6 +45,9 @@ on:
       NPM_TOKEN:
         description: "npm token used for private @cellarnode/* package installs (.npmrc env-var substitution)"
         required: false
+      DISCORD_WEBHOOK_URL:
+        description: "Discord webhook credential"
+        required: false
 
 env:
   PROJECT_ID: festive-terrain-478011-h0
@@ -245,7 +248,9 @@ jobs:
 
   discord-thread-open:
     if: github.event_name == 'pull_request' && github.event.action == 'opened'
-    uses: CellarNode/.github/.github/workflows/discord-notify.yaml@main
+    uses: ./.github/workflows/discord-notify.yaml
+    secrets:
+      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
     with:
       event: thread_open
       tags: ${{ inputs.discord_tags }}
@@ -257,7 +262,9 @@ jobs:
       github.event_name == 'pull_request' &&
       github.event.action != 'closed' &&
       needs.build-deploy.result != 'cancelled'
-    uses: CellarNode/.github/.github/workflows/discord-notify.yaml@main
+    uses: ./.github/workflows/discord-notify.yaml
+    secrets:
+      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
     with:
       event: thread_update
       status: ${{ needs.build-deploy.result }}
@@ -266,7 +273,9 @@ jobs:
 
   discord-thread-close:
     if: github.event_name == 'pull_request' && github.event.action == 'closed'
-    uses: CellarNode/.github/.github/workflows/discord-notify.yaml@main
+    uses: ./.github/workflows/discord-notify.yaml
+    secrets:
+      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
     with:
       event: thread_close
       status: ${{ github.event.pull_request.merged && 'merged' || 'closed' }}
@@ -274,7 +283,9 @@ jobs:
   discord-deploy:
     needs: build-deploy
     if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
-    uses: CellarNode/.github/.github/workflows/discord-notify.yaml@main
+    uses: ./.github/workflows/discord-notify.yaml
+    secrets:
+      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
     with:
       event: deploy
       status: ${{ needs.build-deploy.result }}
