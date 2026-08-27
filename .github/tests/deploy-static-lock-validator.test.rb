@@ -12,19 +12,43 @@ validator = match[:body].gsub(/^ {10}/, "")
 fixtures = {
   "registry resolution" => [<<~YAML, true],
     lockfileVersion: '9.0'
+    importers: {}
     packages:
       '@scope/package@1.0.0':
         resolution:
           integrity: sha512-safe
   YAML
+  "null lock root" => ["null\n", false],
+  "array lock root" => ["- unexpected\n", false],
+  "unrelated lock root" => ["foo: bar\n", false],
+  "missing importers" => [<<~YAML, false],
+    lockfileVersion: '9.0'
+    packages: {}
+  YAML
+  "unsupported lockfile version" => [<<~YAML, false],
+    lockfileVersion: '8.0'
+    importers: {}
+  YAML
+  "non-mapping packages" => [<<~YAML, false],
+    lockfileVersion: '9.0'
+    importers: {}
+    packages: unexpected
+  YAML
+  "non-mapping snapshots" => [<<~YAML, false],
+    lockfileVersion: '9.0'
+    importers: {}
+    snapshots: []
+  YAML
   "empty resolution" => [<<~YAML, false],
     lockfileVersion: '9.0'
+    importers: {}
     packages:
       '@scope/package@1.0.0':
         resolution: {}
   YAML
   "missing integrity value" => [<<~YAML, false],
     lockfileVersion: '9.0'
+    importers: {}
     packages:
       '@scope/package@1.0.0':
         resolution:
@@ -32,6 +56,7 @@ fixtures = {
   YAML
   "structured integrity value" => [<<~YAML, false],
     lockfileVersion: '9.0'
+    importers: {}
     packages:
       '@scope/package@1.0.0':
         resolution:
@@ -40,6 +65,7 @@ fixtures = {
   YAML
   "array integrity value" => [<<~YAML, false],
     lockfileVersion: '9.0'
+    importers: {}
     packages:
       '@scope/package@1.0.0':
         resolution:
@@ -48,6 +74,7 @@ fixtures = {
   YAML
   "unknown integrity algorithm" => [<<~YAML, false],
     lockfileVersion: '9.0'
+    importers: {}
     packages:
       '@scope/package@1.0.0':
         resolution:
@@ -118,6 +145,7 @@ fixtures = {
   YAML
   "raw git protocol" => [<<~YAML, false],
     lockfileVersion: '9.0'
+    importers: {}
     packages:
       git-package@1.0.0:
         resolution:
@@ -126,6 +154,7 @@ fixtures = {
   YAML
   "structured git resolution" => [<<~YAML, false],
     lockfileVersion: '9.0'
+    importers: {}
     packages:
       git-package@1.0.0:
         resolution:
@@ -134,6 +163,7 @@ fixtures = {
   YAML
   "unknown resolution shape" => [<<~YAML, false],
     lockfileVersion: '9.0'
+    importers: {}
     packages:
       external-package@1.0.0:
         resolution:
@@ -141,6 +171,7 @@ fixtures = {
   YAML
   "tarball resolution" => [<<~YAML, false],
     lockfileVersion: '9.0'
+    importers: {}
     packages:
       external-package@1.0.0:
         resolution:
@@ -148,6 +179,7 @@ fixtures = {
   YAML
   "directory resolution" => [<<~YAML, false],
     lockfileVersion: '9.0'
+    importers: {}
     packages:
       external-package@1.0.0:
         resolution:
@@ -155,6 +187,7 @@ fixtures = {
   YAML
   "allowed private package" => [<<~YAML, true],
     lockfileVersion: '9.0'
+    importers: {}
     packages:
       '@cellarnode/ui@0.154.0':
         resolution:
@@ -162,6 +195,7 @@ fixtures = {
   YAML
   "unknown private package" => [<<~YAML, false],
     lockfileVersion: '9.0'
+    importers: {}
     packages:
       '@cellarnode/internal-secrets@1.0.0':
         resolution:
@@ -233,6 +267,7 @@ manifest_fixtures = {
   "github shorthand manifest package" => ["public-package", "attacker/package", false],
   "tarball manifest package" => ["public-package", "package.tgz", false],
   "tar archive manifest package" => ["public-package", "package.tar", false],
+  "unknown protocol manifest package" => ["public-package", "exec:payload", false],
   "git workspace override" => [
     "public-package",
     "^1.0.0",
@@ -328,6 +363,7 @@ dependency_scripts.each do |job_name, (validation_script, non_frozen_script)|
         File.join(directory, "pnpm-lock.yaml"),
         <<~YAML,
           lockfileVersion: '9.0'
+          importers: {}
           packages:
             '@scope/package@1.0.0':
               resolution:

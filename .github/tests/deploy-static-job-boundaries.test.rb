@@ -1,13 +1,14 @@
 require "yaml"
 require "open3"
 require "tmpdir"
+require "json"
 
 workflow_path = File.expand_path("../workflows/deploy-static-website.yaml", __dir__)
 workflow = YAML.safe_load(File.read(workflow_path), aliases: true)
 jobs = workflow.fetch("jobs")
 
 cancel_in_progress = workflow.fetch("concurrency").fetch("cancel-in-progress")
-expected_cancel_policy = "${{ github.event_name == 'pull_request_target' && github.event.action != 'closed' }}"
+expected_cancel_policy = "${{ github.event_name == 'pull_request_target' }}"
 abort "Production deploys must never be cancelled in progress" unless cancel_in_progress == expected_cancel_policy
 
 abort "Preview dependencies must not cross jobs through a package-store artifact" if jobs.key?("preview-dependencies")
@@ -39,6 +40,7 @@ build_preview = jobs.fetch("build-preview")
 abort "Preview build must use a GitHub-hosted runner" unless build_preview.fetch("runs-on") == "ubuntu-latest"
 abort "Preview build must not use a self-hosted container" if build_preview.key?("container")
 abort "Preview build must not receive NPM_TOKEN at job scope" if build_preview.fetch("env", {}).key?("NPM_TOKEN")
+abort "Preview build must allow live pull-request authorization lookup" unless build_preview.fetch("permissions", {}).fetch("pull-requests", nil) == "read"
 preview_install = build_preview.fetch("steps").find { |step| step.fetch("name", "") == "Install dependencies with scoped registry credential" }
 abort "Preview install must receive only the scoped NPM_TOKEN" unless preview_install&.fetch("env", {})&.fetch("NPM_TOKEN", nil) == "${{ secrets.NPM_TOKEN }}"
 untrusted_preview_names = ["Verify credential isolation", "Rebuild dependencies", "Type check", "Lint", "Build preview"]
@@ -49,10 +51,16 @@ abort "Preview build must require the trusted policy output" unless build_previe
 
 preview_steps = build_preview.fetch("steps")
 dependency_validation_index = preview_steps.index { |step| step.fetch("name", "") == "Validate preview dependency inputs" }
+authorization_index = preview_steps.index { |step| step.fetch("name", "") == "Revalidate preview authorization" }
 credentialed_install_index = preview_steps.index { |step| step.fetch("name", "") == "Install dependencies with scoped registry credential" }
 abort "Preview dependency inputs must be validated before credentialed install" unless dependency_validation_index && credentialed_install_index && dependency_validation_index < credentialed_install_index
+abort "Preview authorization must be revalidated immediately before credentialed install" unless authorization_index && authorization_index + 1 == credentialed_install_index
 dependency_validation = preview_steps.fetch(dependency_validation_index)
 abort "Preview dependency validation must not receive NPM_TOKEN" if dependency_validation.fetch("env", {}).key?("NPM_TOKEN")
+preview_authorization = preview_steps.fetch(authorization_index)
+abort "Preview authorization recheck must not receive NPM_TOKEN" if preview_authorization.fetch("env", {}).key?("NPM_TOKEN")
+abort "Preview authorization recheck must use pinned GitHub Script" unless preview_authorization.fetch("uses", "").match?(/\Aactions\/github-script@[0-9a-f]{40}\z/)
+abort "Preview authorization recheck must use the job token" unless preview_authorization.fetch("with", {}).fetch("github-token", nil) == "${{ github.token }}"
 
 %w[build-preview build-production].each do |job_name|
   steps = jobs.fetch(job_name).fetch("steps")
@@ -79,6 +87,64 @@ end
   abort "#{job_name} must depend on the trusted policy" unless Array(job.fetch("needs")).include?("preview-policy")
   abort "#{job_name} must require the trusted policy output" unless job.fetch("if").include?("needs.preview-policy.outputs.trusted == 'true'")
 end
+
+deploy_preview_steps = jobs.fetch("deploy-preview").fetch("steps")
+deploy_authorization_index = deploy_preview_steps.index { |step| step.fetch("name", "") == "Revalidate preview authorization" }
+deploy_oidc_index = deploy_preview_steps.index { |step| step.fetch("name", "") == "Authenticate to Google Cloud" }
+abort "Preview authorization must be revalidated immediately before OIDC" unless deploy_authorization_index && deploy_authorization_index + 1 == deploy_oidc_index
+deploy_authorization = deploy_preview_steps.fetch(deploy_authorization_index)
+abort "Build and deploy must execute the same authorization recheck" unless preview_authorization.fetch("with").fetch("script") == deploy_authorization.fetch("with").fetch("script")
+
+authorization_script = preview_authorization.fetch("with").fetch("script")
+  base_pull_request = {
+    "state" => "open",
+    "user" => { "login" => "maintainer" },
+    "head" => {
+      "sha" => "trusted-head",
+      "repo" => { "full_name" => "CellarNode/site" },
+    },
+  }
+  cases = {
+    "current trusted author" => [base_pull_request, "write", true],
+    "closed pull request" => [base_pull_request.merge("state" => "closed"), "write", false],
+    "changed head" => [base_pull_request.merge("head" => base_pull_request.fetch("head").merge("sha" => "changed-head")), "write", false],
+    "forked head" => [base_pull_request.merge("head" => base_pull_request.fetch("head").merge("repo" => { "full_name" => "attacker/site" })), "write", false],
+    "different author" => [base_pull_request.merge("user" => { "login" => "other-user" }), "write", false],
+    "revoked permission" => [base_pull_request, "read", false],
+  }
+
+  cases.each do |name, (pull_request, permission, expected)|
+    _stdout, _stderr, status = Open3.capture3(
+      {
+        "ACTOR" => "maintainer",
+        "AUTHORIZATION_SCRIPT" => authorization_script,
+        "CURRENT_PERMISSION" => permission,
+        "EXPECTED_HEAD" => "trusted-head",
+        "PR_JSON" => JSON.generate(pull_request),
+        "PR_NUMBER" => "42",
+        "REPOSITORY" => "CellarNode/site",
+      },
+      "node", "-e", <<~'JAVASCRIPT',
+        const AsyncFunction = Object.getPrototypeOf(async () => null).constructor;
+        const pullRequest = JSON.parse(process.env.PR_JSON);
+        const github = {
+          rest: {
+            pulls: { get: async () => ({ data: pullRequest }) },
+            repos: {
+              getCollaboratorPermissionLevel: async () => ({
+                data: { permission: process.env.CURRENT_PERMISSION },
+              }),
+            },
+          },
+        };
+        const context = { repo: { owner: 'CellarNode', repo: 'site' } };
+        const core = { setFailed: message => { throw new Error(message); } };
+        new AsyncFunction('github', 'context', 'core', process.env.AUTHORIZATION_SCRIPT)(github, context, core)
+          .catch(error => { console.error(error.message); process.exitCode = 1; });
+      JAVASCRIPT
+    )
+    abort "#{name}: expected accepted=#{expected}, got accepted=#{status.success?}" unless status.success? == expected
+  end
 
 abort "Preview lifecycle must not bind an unavailable sender field" if File.read(workflow_path).include?("github.event.sender.login")
 abort "Preview lifecycle must not trust stale author association" if File.read(workflow_path).include?("author_association")

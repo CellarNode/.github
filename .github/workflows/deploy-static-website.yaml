@@ -56,7 +56,7 @@ on:
 
 concurrency:
   group: static-deploy-${{ inputs.website_slug }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request_target' && github.event.action != 'closed' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request_target' }}
 
 env:
   PROJECT_ID: festive-terrain-478011-h0
@@ -135,6 +135,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      pull-requests: read
 
     steps:
       - name: Set up pnpm
@@ -180,7 +181,8 @@ jobs:
             peerDependencies
             resolutions
           ].freeze
-          non_registry_dependency_source = /\A(?:npm:|git\+|git@|git:\/\/|ssh:\/\/|github:|gitlab:|bitbucket:|https?:\/\/|file:|link:|workspace:|patch:|portal:|catalog:)|[\\\/]|\.(?:tgz|tar(?:\.gz)?)\z/i
+          protocol_dependency_source = /\A[a-z][a-z0-9+.-]*:/i
+          path_or_archive_dependency_source = /[\\\/]|\.(?:tgz|tar(?:\.gz)?)\z/i
           allowed_private_packages = %w[
             auth
             beverage-utils
@@ -219,7 +221,8 @@ jobs:
               value.scan(private_package).flatten.each do |package|
                 failures << "#{path}:#{keys.join('.')}" unless allowed_private_packages.include?(package.downcase)
               end
-              if keys.any? { |key| dependency_sections.include?(key) } && non_registry_dependency_source.match?(value)
+              if keys.any? { |key| dependency_sections.include?(key) } &&
+                 (protocol_dependency_source.match?(value) || path_or_archive_dependency_source.match?(value))
                 failures << "#{path}:#{keys.join('.')}"
               end
             end
@@ -299,7 +302,15 @@ jobs:
             end
           end
 
-          visit.call(YAML.safe_load(File.read(path), aliases: true), [])
+          lock = YAML.safe_load(File.read(path), aliases: true)
+          abort "Dependency lock must contain a mapping" unless lock.is_a?(Hash)
+          abort "Dependency lock must use lockfile version 9.0" unless lock["lockfileVersion"].to_s == "9.0"
+          abort "Dependency lock importers must contain a mapping" unless lock["importers"].is_a?(Hash)
+          %w[packages snapshots].each do |section|
+            abort "Dependency lock #{section} must contain a mapping" if lock.key?(section) && !lock[section].is_a?(Hash)
+          end
+
+          visit.call(lock, [])
           abort "Dependency lock contains a disallowed source or private package at #{failures.uniq.join(', ')}" unless failures.empty?
           RUBY
 
@@ -309,6 +320,37 @@ jobs:
             exit 1
           fi
           ruby "$LOCK_VALIDATOR" pnpm-lock.yaml
+
+      - name: Revalidate preview authorization
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b
+        env:
+          ACTOR: ${{ github.actor }}
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPOSITORY: ${{ github.repository }}
+        with:
+          github-token: ${{ github.token }}
+          script: &preview-authorization |
+            const actor = process.env.ACTOR;
+            const expectedHead = process.env.EXPECTED_HEAD;
+            const prNumber = Number(process.env.PR_NUMBER);
+            const repository = process.env.REPOSITORY;
+            const { data: pullRequest } = await github.rest.pulls.get({
+              ...context.repo,
+              pull_number: prNumber,
+            });
+            const { data: access } = await github.rest.repos.getCollaboratorPermissionLevel({
+              ...context.repo,
+              username: actor,
+            });
+            const authorized = pullRequest.state === 'open' &&
+              pullRequest.user?.login === actor &&
+              pullRequest.head.repo?.full_name === repository &&
+              pullRequest.head.sha === expectedHead &&
+              ['admin', 'maintain', 'write'].includes(access.permission);
+            if (!authorized) {
+              core.setFailed('Preview authorization is no longer valid');
+            }
 
       - name: Install dependencies with scoped registry credential
         shell: bash
@@ -588,6 +630,17 @@ jobs:
             echo "Static artifact contains a non-regular entry" >&2
             exit 1
           fi
+
+      - name: Revalidate preview authorization
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b
+        env:
+          ACTOR: ${{ github.actor }}
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPOSITORY: ${{ github.repository }}
+        with:
+          github-token: ${{ github.token }}
+          script: *preview-authorization
 
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
