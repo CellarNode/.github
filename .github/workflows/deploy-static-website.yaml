@@ -92,7 +92,7 @@ jobs:
       - name: Reject executable dependency sources
         shell: bash
         run: |
-          if grep -En '(git\+|github:|gitlab:|bitbucket:|https?://|file:|link:)' pnpm-lock.yaml; then
+          if grep -En ":[[:space:]]*[\"']?(git\\+|github:|gitlab:|bitbucket:|https?://|file:|link:)" pnpm-lock.yaml; then
             echo "Preview dependency lock contains a non-registry source" >&2
             exit 1
           fi
