@@ -160,7 +160,7 @@ jobs:
         env:
           MANIFEST_VALIDATOR: ${{ runner.temp }}/cellarnode-preview-manifest-validator.rb
           LOCK_VALIDATOR: ${{ runner.temp }}/cellarnode-preview-lock-validator.rb
-        run: |
+        run: &dependency-validation |
           cat > "$MANIFEST_VALIDATOR" <<'RUBY'
           require "find"
           require "json"
@@ -183,7 +183,7 @@ jobs:
             end
             next unless File.basename(path) == "package.json"
 
-            abort "Preview dependency manifest must be a regular file: #{path}" if File.symlink?(path) || !File.file?(path)
+            abort "Dependency manifest must be a regular file: #{path}" if File.symlink?(path) || !File.file?(path)
             manifests << path
           end
           abort "Root package.json must be a regular file" unless manifests.include?("./package.json")
@@ -208,7 +208,7 @@ jobs:
           end
 
           manifests.each { |path| visit.call(JSON.parse(File.read(path)), path, []) }
-          abort "Preview dependency manifest contains a disallowed private package at #{failures.uniq.join(', ')}" unless failures.empty?
+          abort "Dependency manifest contains a disallowed private package at #{failures.uniq.join(', ')}" unless failures.empty?
           RUBY
 
           cat > "$LOCK_VALIDATOR" <<'RUBY'
@@ -270,7 +270,7 @@ jobs:
           end
 
           visit.call(YAML.safe_load(File.read(path), aliases: true), [])
-          abort "Preview dependency lock contains a disallowed source or private package at #{failures.uniq.join(', ')}" unless failures.empty?
+          abort "Dependency lock contains a disallowed source or private package at #{failures.uniq.join(', ')}" unless failures.empty?
           RUBY
 
           ruby "$MANIFEST_VALIDATOR"
@@ -385,23 +385,33 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Validate production dependency inputs
+        shell: bash
+        env:
+          MANIFEST_VALIDATOR: ${{ runner.temp }}/cellarnode-production-manifest-validator.rb
+          LOCK_VALIDATOR: ${{ runner.temp }}/cellarnode-production-lock-validator.rb
+        run: *dependency-validation
+
       - name: Install dependencies with scoped registry credential
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
           NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/cellarnode-production-npmrc
+          MANIFEST_VALIDATOR: ${{ runner.temp }}/cellarnode-production-manifest-validator.rb
+          LOCK_VALIDATOR: ${{ runner.temp }}/cellarnode-production-lock-validator.rb
         run: |
           if [ -z "$NPM_TOKEN" ]; then
             echo "NPM_TOKEN is required to fetch private @cellarnode packages" >&2
             exit 1
           fi
           rm -f -- .npmrc .pnpmfile.cjs "$NPM_CONFIG_USERCONFIG"
-          trap 'rm -f "$NPM_CONFIG_USERCONFIG"' EXIT
+          trap 'rm -f "$NPM_CONFIG_USERCONFIG" "$MANIFEST_VALIDATOR" "$LOCK_VALIDATOR"' EXIT
           umask 077
           printf '%s\n' \
             '@cellarnode:registry=https://registry.npmjs.org/' \
             "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" \
             > "$NPM_CONFIG_USERCONFIG"
           pnpm install ${{ inputs.frozen_lockfile && '--frozen-lockfile' || '--no-frozen-lockfile' }} --ignore-scripts --ignore-pnpmfile
+          ruby "$LOCK_VALIDATOR" pnpm-lock.yaml
 
       - name: Verify credential isolation
         env:
