@@ -56,7 +56,7 @@ on:
 
 concurrency:
   group: static-deploy-${{ inputs.website_slug }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' && github.event.action != 'closed' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request_target' && github.event.action != 'closed' }}
 
 env:
   PROJECT_ID: festive-terrain-478011-h0
@@ -69,6 +69,7 @@ jobs:
       contents: read
     outputs:
       trusted: ${{ steps.policy.outputs.trusted }}
+      toolchain_allowed: ${{ steps.policy.outputs.toolchain_allowed }}
     steps:
       - name: Evaluate preview trust boundary
         id: policy
@@ -80,6 +81,8 @@ jobs:
           REPOSITORY: ${{ github.repository }}
           ACTOR: ${{ github.actor }}
           AUTHOR: ${{ github.event.pull_request.user.login }}
+          NODE_VERSION: ${{ inputs.node_version }}
+          PNPM_VERSION: ${{ inputs.pnpm_version }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
@@ -94,8 +97,15 @@ jobs:
             actor_matches_author=true
           fi
 
+          toolchain_allowed=false
+          if [ "$NODE_VERSION" = "22" ]; then
+            case "$PNPM_VERSION" in
+              10.28.2|10.32.1) toolchain_allowed=true ;;
+            esac
+          fi
+
           permission_allowed=false
-          if [ "$EVENT_NAME" = "pull_request" ] &&
+          if [ "$EVENT_NAME" = "pull_request_target" ] &&
             [ "$same_repository" = "true" ] &&
             [ "$actor_matches_author" = "true" ]; then
             permission="$(gh api "repos/${REPOSITORY}/collaborators/${ACTOR}/permission" --jq .permission)"
@@ -105,17 +115,19 @@ jobs:
           fi
 
           trusted=false
-          if [ "$EVENT_NAME" = "pull_request" ] &&
+          if [ "$EVENT_NAME" = "pull_request_target" ] &&
             [ "$EVENT_ACTION" != "closed" ] &&
             [ "$same_repository" = "true" ] &&
             [ "$permission_allowed" = "true" ] &&
-            [ "$actor_matches_author" = "true" ]; then
+            [ "$actor_matches_author" = "true" ] &&
+            [ "$toolchain_allowed" = "true" ]; then
             trusted=true
           fi
 
           printf 'trusted=%s\n' "$trusted" >> "$GITHUB_OUTPUT"
-          printf 'preview policy: event=%s action=%s same_repository=%s permission_allowed=%s actor_matches_author=%s trusted=%s\n' \
-            "$EVENT_NAME" "$EVENT_ACTION" "$same_repository" "$permission_allowed" "$actor_matches_author" "$trusted"
+          printf 'toolchain_allowed=%s\n' "$toolchain_allowed" >> "$GITHUB_OUTPUT"
+          printf 'preview policy: event=%s action=%s same_repository=%s permission_allowed=%s actor_matches_author=%s toolchain_allowed=%s trusted=%s\n' \
+            "$EVENT_NAME" "$EVENT_ACTION" "$same_repository" "$permission_allowed" "$actor_matches_author" "$toolchain_allowed" "$trusted"
 
   build-preview:
     needs: preview-policy
@@ -143,14 +155,13 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
 
-      - name: Install dependencies with scoped registry credential
+      - name: Validate preview dependency inputs
         shell: bash
         env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-          NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/cellarnode-preview-npmrc
+          MANIFEST_VALIDATOR: ${{ runner.temp }}/cellarnode-preview-manifest-validator.rb
+          LOCK_VALIDATOR: ${{ runner.temp }}/cellarnode-preview-lock-validator.rb
         run: |
-          validate_manifests() {
-            ruby <<'RUBY'
+          cat > "$MANIFEST_VALIDATOR" <<'RUBY'
           require "find"
           require "json"
 
@@ -199,10 +210,8 @@ jobs:
           manifests.each { |path| visit.call(JSON.parse(File.read(path)), path, []) }
           abort "Preview dependency manifest contains a disallowed private package at #{failures.uniq.join(', ')}" unless failures.empty?
           RUBY
-          }
 
-          validate_lock() {
-            ruby - "$1" <<'RUBY'
+          cat > "$LOCK_VALIDATOR" <<'RUBY'
           require "yaml"
 
           path = ARGV.fetch(0)
@@ -263,27 +272,35 @@ jobs:
           visit.call(YAML.safe_load(File.read(path), aliases: true), [])
           abort "Preview dependency lock contains a disallowed source or private package at #{failures.uniq.join(', ')}" unless failures.empty?
           RUBY
-          }
 
-          validate_manifests
+          ruby "$MANIFEST_VALIDATOR"
+          if [ ! -f pnpm-lock.yaml ] || [ -L pnpm-lock.yaml ]; then
+            echo "pnpm-lock.yaml must be a regular file" >&2
+            exit 1
+          fi
+          ruby "$LOCK_VALIDATOR" pnpm-lock.yaml
+
+      - name: Install dependencies with scoped registry credential
+        shell: bash
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/cellarnode-preview-npmrc
+          MANIFEST_VALIDATOR: ${{ runner.temp }}/cellarnode-preview-manifest-validator.rb
+          LOCK_VALIDATOR: ${{ runner.temp }}/cellarnode-preview-lock-validator.rb
+        run: |
           if [ -z "$NPM_TOKEN" ]; then
             echo "NPM_TOKEN is required to fetch private @cellarnode packages" >&2
             exit 1
           fi
           rm -f -- .npmrc .pnpmfile.cjs "$NPM_CONFIG_USERCONFIG"
-          trap 'rm -f "$NPM_CONFIG_USERCONFIG"' EXIT
+          trap 'rm -f "$NPM_CONFIG_USERCONFIG" "$MANIFEST_VALIDATOR" "$LOCK_VALIDATOR"' EXIT
           umask 077
           printf '%s\n' \
             '@cellarnode:registry=https://registry.npmjs.org/' \
             "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" \
             > "$NPM_CONFIG_USERCONFIG"
-          if [ ! -f pnpm-lock.yaml ] || [ -L pnpm-lock.yaml ]; then
-            echo "pnpm-lock.yaml must be a regular file" >&2
-            exit 1
-          fi
-          validate_lock pnpm-lock.yaml
           pnpm install ${{ inputs.frozen_lockfile && '--frozen-lockfile' || '--no-frozen-lockfile' }} --ignore-scripts --ignore-pnpmfile
-          validate_lock pnpm-lock.yaml
+          ruby "$LOCK_VALIDATOR" pnpm-lock.yaml
 
       - name: Verify credential isolation
         env:
@@ -343,7 +360,11 @@ jobs:
           retention-days: 1
 
   build-production:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: preview-policy
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main' &&
+      needs.preview-policy.outputs.toolchain_allowed == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -608,7 +629,7 @@ jobs:
 
   cleanup:
     if: >-
-      github.event_name == 'pull_request' &&
+      github.event_name == 'pull_request_target' &&
       github.event.action == 'closed' &&
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: self-hosted-k8s
@@ -677,7 +698,7 @@ jobs:
 
   discord-thread-close:
     if: >-
-      github.event_name == 'pull_request' &&
+      github.event_name == 'pull_request_target' &&
       github.event.action == 'closed' &&
       github.event.pull_request.head.repo.full_name == github.repository
     permissions:
