@@ -36,6 +36,11 @@ on:
         required: false
         type: string
         default: "22"
+      pnpm_version:
+        description: "Trusted pnpm version used for preview builds"
+        required: false
+        type: string
+        default: "10.32.1"
       discord_tags:
         description: "Comma-separated Discord forum tag names (e.g. admin,importer)"
         required: false
@@ -43,8 +48,8 @@ on:
         default: ""
     secrets:
       NPM_TOKEN:
-        description: "npm token used for private @cellarnode/* package installs (.npmrc env-var substitution)"
-        required: false
+        description: "Read-only npm token used to fetch private @cellarnode packages"
+        required: true
       DISCORD_WEBHOOK_URL:
         description: "Discord webhook credential"
         required: false
@@ -54,260 +59,364 @@ env:
   GCS_BUCKET: websites-deploy
 
 jobs:
-  build:
-    if: github.event.action != 'closed'
-    # Self-hosted: site builds were the org's remaining paid-GHA-minutes bulk.
-    # Prebaked ci-runner image = no per-job node/pnpm/gcloud downloads; npm
-    # rides the in-region AR mirror. All repos are private, and fork PRs are
-    # already build-only via the should_deploy flag.
-    runs-on: self-hosted-k8s
-    container:
-      image: europe-north1-docker.pkg.dev/festive-terrain-478011-h0/beveriq/ci-runner@sha256:e57fadf58eb4e125a101f366a9cd97cb022e3cb8a9eae6028cefdfb0003b2960
-    outputs:
-      preview_eligible: ${{ steps.flags.outputs.should_deploy }}
+  # pull_request_target loads this workflow from the base branch. The PR can
+  # change source and lockfiles, but it cannot add a step that reads NPM_TOKEN.
+  # This job only populates a pnpm store; it never executes project or package
+  # lifecycle code. The store crosses into the tokenless build through an
+  # artifact and the GitHub-hosted runners are isolated per job.
+  preview-dependencies:
+    if: github.event_name == 'pull_request_target' && github.event.action != 'closed'
+    runs-on: ubuntu-latest
     permissions:
       contents: read
 
     steps:
-    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Checkout pull-request dependency lock
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
 
-    # Fork PRs can't authenticate via the repo-bound WIF provider — build
-    # only, skip auth/deploy instead of failing red.
-    - name: Set deploy flags
-      id: flags
-      env:
-        HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
-        BASE_REPO: ${{ github.repository }}
-      run: |
-        if [ "${{ github.event_name }}" = "pull_request" ]; then
-          if [ "$HEAD_REPO" = "$BASE_REPO" ]; then
-            echo "should_deploy=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "should_deploy=false" >> "$GITHUB_OUTPUT"
+      - name: Set up pnpm
+        uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa
+        with:
+          version: ${{ inputs.pnpm_version }}
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: ${{ inputs.node_version }}
+
+      - name: Reject executable dependency sources
+        shell: bash
+        run: |
+          if grep -En '(git\+|github:|gitlab:|bitbucket:|https?://|file:|link:)' pnpm-lock.yaml; then
+            echo "Preview dependency lock contains a non-registry source" >&2
+            exit 1
           fi
-        else
-          echo "should_deploy=true" >> "$GITHUB_OUTPUT"
-        fi
 
-    # node22 + pnpm (corepack) come prebaked in the ci-runner image; the
-    # node_version input is no longer consulted (all sites are on 22).
+      - name: Fetch dependencies without lifecycle execution
+        shell: bash
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          PNPM_STORE_PATH: ${{ runner.temp }}/pnpm-store
+        run: |
+          rm -f -- .npmrc .pnpmfile.cjs
+          TRUSTED_HOME="${RUNNER_TEMP}/cellarnode-preview-home"
+          trap 'rm -rf -- "$TRUSTED_HOME"' EXIT
+          mkdir -p "$TRUSTED_HOME"
+          umask 077
+          printf '%s\n' \
+            '@cellarnode:registry=https://registry.npmjs.org/' \
+            "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" \
+            > "$TRUSTED_HOME/.npmrc"
+          HOME="$TRUSTED_HOME" pnpm fetch --frozen-lockfile --ignore-scripts --ignore-pnpmfile --store-dir "$PNPM_STORE_PATH"
 
-    - name: Install dependencies
-      env:
-        NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-      run: pnpm install ${{ inputs.frozen_lockfile && '--frozen-lockfile' || '--no-frozen-lockfile' }} --ignore-scripts
+      - name: Upload dependency store
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: preview-dependencies-${{ inputs.website_slug }}
+          path: ${{ runner.temp }}/pnpm-store
+          if-no-files-found: error
+          retention-days: 1
 
-    - name: Rebuild dependencies
-      run: pnpm rebuild
+  build-preview:
+    needs: preview-dependencies
+    if: github.event_name == 'pull_request_target' && github.event.action != 'closed'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
 
-    - name: Type check
-      if: inputs.typecheck
-      run: pnpm tsc --noEmit
+    steps:
+      - name: Checkout pull-request source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
 
-    - name: Lint
-      if: inputs.lint
-      run: pnpm lint
+      - name: Set up pnpm
+        uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa
+        with:
+          version: ${{ inputs.pnpm_version }}
+          run_install: false
 
-    - name: Build
-      shell: bash
-      run: |
-        if [ -n "$BUILD_ENV_VARS" ]; then
-          while IFS= read -r line; do
-            [ -n "$line" ] && export "${line?}"
-          done <<< "$BUILD_ENV_VARS"
-        fi
-        pnpm build
-      env:
-        BUILD_ENV_VARS: ${{ inputs.build_env }}
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: ${{ inputs.node_version }}
 
-    - name: Upload static site artifact
-      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-      with:
-        name: static-site-${{ inputs.website_slug }}
-        path: dist
-        if-no-files-found: error
-        retention-days: 1
+      - name: Download dependency store
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: preview-dependencies-${{ inputs.website_slug }}
+          path: ${{ runner.temp }}/pnpm-store
 
-  deploy-production:
-    needs: build
+      - name: Install dependencies offline
+        shell: bash
+        env:
+          PNPM_STORE_PATH: ${{ runner.temp }}/pnpm-store
+        run: |
+          rm -f -- .npmrc .pnpmfile.cjs
+          pnpm install --offline --frozen-lockfile --ignore-scripts --ignore-pnpmfile --store-dir "$PNPM_STORE_PATH"
+
+      - name: Rebuild dependencies
+        run: pnpm rebuild
+
+      - name: Type check
+        if: inputs.typecheck
+        run: pnpm tsc --noEmit
+
+      - name: Lint
+        if: inputs.lint
+        run: pnpm lint
+
+      - name: Build preview
+        shell: bash
+        env:
+          BUILD_ENV_VARS: ${{ inputs.build_env }}
+        run: |
+          if [ -n "$BUILD_ENV_VARS" ]; then
+            while IFS= read -r line; do
+              [ -n "$line" ] && export "${line?}"
+            done <<< "$BUILD_ENV_VARS"
+          fi
+          pnpm build
+
+      - name: Upload static site artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: static-site-${{ inputs.website_slug }}
+          path: dist
+          if-no-files-found: error
+          retention-days: 1
+
+  build-production:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: self-hosted-k8s
     container:
       image: europe-north1-docker.pkg.dev/festive-terrain-478011-h0/beveriq/ci-runner@sha256:e57fadf58eb4e125a101f366a9cd97cb022e3cb8a9eae6028cefdfb0003b2960
+    permissions:
+      contents: read
 
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+
+      - name: Install dependencies
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: pnpm install ${{ inputs.frozen_lockfile && '--frozen-lockfile' || '--no-frozen-lockfile' }} --ignore-scripts
+
+      - name: Rebuild dependencies
+        run: pnpm rebuild
+
+      - name: Type check
+        if: inputs.typecheck
+        run: pnpm tsc --noEmit
+
+      - name: Lint
+        if: inputs.lint
+        run: pnpm lint
+
+      - name: Build production
+        shell: bash
+        env:
+          BUILD_ENV_VARS: ${{ inputs.build_env }}
+        run: |
+          if [ -n "$BUILD_ENV_VARS" ]; then
+            while IFS= read -r line; do
+              [ -n "$line" ] && export "${line?}"
+            done <<< "$BUILD_ENV_VARS"
+          fi
+          pnpm build
+
+      - name: Upload static site artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: static-site-${{ inputs.website_slug }}
+          path: dist
+          if-no-files-found: error
+          retention-days: 1
+
+  deploy-production:
+    needs: build-production
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: self-hosted-k8s
+    container:
+      image: europe-north1-docker.pkg.dev/festive-terrain-478011-h0/beveriq/ci-runner@sha256:e57fadf58eb4e125a101f366a9cd97cb022e3cb8a9eae6028cefdfb0003b2960
     permissions:
       contents: read
       id-token: write
 
     steps:
-    - name: Download static site artifact
-      uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-      with:
-        name: static-site-${{ inputs.website_slug }}
-        path: dist
+      - name: Download static site artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: static-site-${{ inputs.website_slug }}
+          path: dist
 
-    - name: Authenticate to Google Cloud
-      uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
-      with:
-        project_id: ${{ env.PROJECT_ID }}
-        workload_identity_provider: 'projects/1040576468442/locations/global/workloadIdentityPools/iamwipp-pipelines/providers/iamwipp-github-pipelines-beveriq'
-        service_account: 'pipelines@${{ env.PROJECT_ID }}.iam.gserviceaccount.com'
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+          workload_identity_provider: 'projects/1040576468442/locations/global/workloadIdentityPools/iamwipp-pipelines/providers/iamwipp-github-pipelines-beveriq'
+          service_account: 'pipelines@${{ env.PROJECT_ID }}.iam.gserviceaccount.com'
 
-    - name: Set up Cloud SDK
-      uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f
-      with:
-        skip_install: true # gcloud prebaked in ci-runner image
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f
+        with:
+          skip_install: true
 
-    # Warm gcloud's SQLite credential/token caches with a single serial call
-    # before the parallel rsync. On ephemeral runners ~/.config/gcloud is
-    # fresh every run, so the first gcloud invocation performs a schema
-    # migration (ALTER TABLE ... ADD COLUMN id_token / regional_access_
-    # boundary*). `gcloud storage rsync` fans out into worker processes that
-    # otherwise race that migration and the token cache writes, failing
-    # upload tasks with "duplicate column name: ..." / "database is locked"
-    # and leaving the site partially deployed (2026-07-09, admin dashboard).
-    # Retry with backoff: the WIF token exchange re-fetches the GitHub OIDC
-    # subject token on refresh, and GitHub's Envoy-fronted token endpoint
-    # intermittently rejects under load ("upstream connect error ... reset
-    # reason: overflow" → "Unable to retrieve Identity Pool subject token",
-    # seen 2026-07-09 on run 29019157677). Better to absorb that here than
-    # fail the deploy — this step also doubles as the auth canary before
-    # the parallel rsync.
-    - name: Warm gcloud credential cache
-      run: |
-        for i in 1 2 3 4 5; do
-          gcloud storage ls "gs://${GCS_BUCKET}" > /dev/null && exit 0
-          echo "gcloud warm-up attempt ${i}/5 failed; retrying in $((i * 10))s"
-          sleep $((i * 10))
-        done
-        echo "gcloud warm-up failed after 5 attempts" >&2
-        exit 1
+      - name: Warm gcloud credential cache
+        run: |
+          for i in 1 2 3 4 5; do
+            gcloud storage ls "gs://${GCS_BUCKET}" > /dev/null && exit 0
+            echo "gcloud warm-up attempt ${i}/5 failed; retrying in $((i * 10))s"
+            sleep $((i * 10))
+          done
+          echo "gcloud warm-up failed after 5 attempts" >&2
+          exit 1
 
-    - name: Deploy to production
-      env:
-        WEBSITE: ${{ inputs.website }}
-      run: |
-        gcloud storage rsync --recursive --checksums-only --delete-unmatched-destination-objects \
-          ./dist "gs://${GCS_BUCKET}/${WEBSITE}"
+      - name: Deploy to production
+        env:
+          WEBSITE: ${{ inputs.website }}
+        run: |
+          gcloud storage rsync --recursive --checksums-only --delete-unmatched-destination-objects \
+            ./dist "gs://${GCS_BUCKET}/${WEBSITE}"
 
   deploy-preview:
-    needs: build
+    needs: build-preview
     if: >-
-      github.event_name == 'pull_request' &&
+      github.event_name == 'pull_request_target' &&
       github.event.action != 'closed' &&
-      needs.build.outputs.preview_eligible == 'true'
+      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: self-hosted-k8s
     container:
       image: europe-north1-docker.pkg.dev/festive-terrain-478011-h0/beveriq/ci-runner@sha256:e57fadf58eb4e125a101f366a9cd97cb022e3cb8a9eae6028cefdfb0003b2960
-
     permissions:
       contents: read
       id-token: write
       pull-requests: write
 
     steps:
-    - name: Download static site artifact
-      uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-      with:
-        name: static-site-${{ inputs.website_slug }}
-        path: dist
+      - name: Download static site artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: static-site-${{ inputs.website_slug }}
+          path: dist
 
-    - name: Authenticate to Google Cloud
-      uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
-      with:
-        project_id: ${{ env.PROJECT_ID }}
-        workload_identity_provider: 'projects/1040576468442/locations/global/workloadIdentityPools/iamwipp-pipelines/providers/iamwipp-github-pipelines-beveriq'
-        service_account: 'pipelines@${{ env.PROJECT_ID }}.iam.gserviceaccount.com'
+      - name: Reject non-regular artifact entries
+        shell: bash
+        run: |
+          test -d dist
+          if find dist \( -type l -o -type b -o -type c -o -type p -o -type s \) -print -quit | grep -q .; then
+            echo "Static artifact contains a non-regular entry" >&2
+            exit 1
+          fi
 
-    - name: Set up Cloud SDK
-      uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f
-      with:
-        skip_install: true # gcloud prebaked in ci-runner image
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+          workload_identity_provider: 'projects/1040576468442/locations/global/workloadIdentityPools/iamwipp-pipelines/providers/iamwipp-github-pipelines-beveriq'
+          service_account: 'pipelines@${{ env.PROJECT_ID }}.iam.gserviceaccount.com'
 
-    - name: Warm gcloud credential cache
-      run: |
-        for i in 1 2 3 4 5; do
-          gcloud storage ls "gs://${GCS_BUCKET}" > /dev/null && exit 0
-          echo "gcloud warm-up attempt ${i}/5 failed; retrying in $((i * 10))s"
-          sleep $((i * 10))
-        done
-        echo "gcloud warm-up failed after 5 attempts" >&2
-        exit 1
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f
+        with:
+          skip_install: true
 
-    - name: Deploy preview
-      env:
-        WEBSITE_SLUG: ${{ inputs.website_slug }}
-        PR_NUMBER: ${{ github.event.pull_request.number }}
-      run: |
-        gcloud storage rsync --recursive --checksums-only --delete-unmatched-destination-objects \
-          ./dist "gs://${GCS_BUCKET}/preview/${WEBSITE_SLUG}/pr${PR_NUMBER}"
+      - name: Warm gcloud credential cache
+        run: |
+          for i in 1 2 3 4 5; do
+            gcloud storage ls "gs://${GCS_BUCKET}" > /dev/null && exit 0
+            echo "gcloud warm-up attempt ${i}/5 failed; retrying in $((i * 10))s"
+            sleep $((i * 10))
+          done
+          echo "gcloud warm-up failed after 5 attempts" >&2
+          exit 1
 
-    - name: Comment preview URL
-      uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b
-      with:
-        script: |
-          const slug = '${{ inputs.website_slug }}';
-          const pr = context.payload.pull_request;
-          const previewUrl = `https://${slug}-pr${pr.number}.dev.cellarnode.com`;
-          const body = `## Preview Deployment\n\nPreview available at: ${previewUrl}`;
+      - name: Deploy preview
+        env:
+          WEBSITE_SLUG: ${{ inputs.website_slug }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          gcloud storage rsync --recursive --checksums-only --delete-unmatched-destination-objects \
+            ./dist "gs://${GCS_BUCKET}/preview/${WEBSITE_SLUG}/pr${PR_NUMBER}"
 
-          const { data: comments } = await github.rest.issues.listComments({
-            owner: context.repo.owner,
-            repo: context.repo.repo,
-            issue_number: pr.number,
-          });
+      - name: Comment preview URL
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b
+        env:
+          WEBSITE_SLUG: ${{ inputs.website_slug }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        with:
+          script: |
+            const slug = process.env.WEBSITE_SLUG;
+            const prNumber = Number(process.env.PR_NUMBER);
+            const previewUrl = `https://${slug}-pr${prNumber}.dev.cellarnode.com`;
+            const body = `## Preview Deployment\n\nPreview available at: ${previewUrl}`;
 
-          const botComment = comments.find(c =>
-            c.user.type === 'Bot' && c.body.includes('Preview Deployment')
-          );
-
-          if (botComment) {
-            await github.rest.issues.updateComment({
+            const { data: comments } = await github.rest.issues.listComments({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              comment_id: botComment.id,
-              body: body
+              issue_number: prNumber,
             });
-          } else {
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: pr.number,
-              body: body
-            });
-          }
+
+            const botComment = comments.find(comment =>
+              comment.user.type === 'Bot' && comment.body.includes('Preview Deployment')
+            );
+
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                body,
+              });
+            }
 
   cleanup:
-    if: github.event_name == 'pull_request' && github.event.action == 'closed'
+    if: github.event_name == 'pull_request_target' && github.event.action == 'closed'
     runs-on: self-hosted-k8s
     container:
       image: europe-north1-docker.pkg.dev/festive-terrain-478011-h0/beveriq/ci-runner@sha256:e57fadf58eb4e125a101f366a9cd97cb022e3cb8a9eae6028cefdfb0003b2960
-
     permissions:
       contents: read
       id-token: write
 
     steps:
-    - name: Authenticate to Google Cloud
-      uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
-      with:
-        project_id: ${{ env.PROJECT_ID }}
-        workload_identity_provider: 'projects/1040576468442/locations/global/workloadIdentityPools/iamwipp-pipelines/providers/iamwipp-github-pipelines-beveriq'
-        service_account: 'pipelines@${{ env.PROJECT_ID }}.iam.gserviceaccount.com'
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+          workload_identity_provider: 'projects/1040576468442/locations/global/workloadIdentityPools/iamwipp-pipelines/providers/iamwipp-github-pipelines-beveriq'
+          service_account: 'pipelines@${{ env.PROJECT_ID }}.iam.gserviceaccount.com'
 
-    - name: Set up Cloud SDK
-      uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f
-      with:
-        skip_install: true # gcloud prebaked in ci-runner image
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f
+        with:
+          skip_install: true
 
-    - name: Delete preview
-      run: |
-        gcloud storage rm --recursive gs://${{ env.GCS_BUCKET }}/preview/${{ inputs.website_slug }}/pr${{ github.event.pull_request.number }} || true
-
-  # --- Discord thread lifecycle ---
+      - name: Delete preview
+        env:
+          WEBSITE_SLUG: ${{ inputs.website_slug }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          gcloud storage rm --recursive "gs://${GCS_BUCKET}/preview/${WEBSITE_SLUG}/pr${PR_NUMBER}" || true
 
   discord-thread-open:
-    if: github.event_name == 'pull_request' && github.event.action == 'opened'
+    if: github.event_name == 'pull_request_target' && github.event.action == 'opened'
     permissions:
       pull-requests: write
     uses: ./.github/workflows/discord-notify.yaml
@@ -318,12 +427,12 @@ jobs:
       tags: ${{ inputs.discord_tags }}
 
   discord-build-update:
-    needs: [build, deploy-preview, discord-thread-open]
+    needs: [preview-dependencies, build-preview, deploy-preview, discord-thread-open]
     if: >-
       always() &&
-      github.event_name == 'pull_request' &&
+      github.event_name == 'pull_request_target' &&
       github.event.action != 'closed' &&
-      needs.build.result != 'cancelled'
+      needs.preview-dependencies.result != 'cancelled'
     permissions:
       pull-requests: write
     uses: ./.github/workflows/discord-notify.yaml
@@ -331,12 +440,11 @@ jobs:
       DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
     with:
       event: thread_update
-      status: ${{ needs.build.result == 'success' && (needs.build.outputs.preview_eligible != 'true' && 'success' || needs.deploy-preview.result) || needs.build.result }}
-      # Fork PRs skip the preview deploy — don't post a dead link
+      status: ${{ needs.preview-dependencies.result == 'success' && (needs.build-preview.result == 'success' && (needs.deploy-preview.result == 'skipped' && 'success' || needs.deploy-preview.result) || needs.build-preview.result) || needs.preview-dependencies.result }}
       preview_url: ${{ needs.deploy-preview.result == 'success' && format('https://{0}-pr{1}.dev.cellarnode.com', inputs.website_slug, github.event.pull_request.number) || '' }}
 
   discord-thread-close:
-    if: github.event_name == 'pull_request' && github.event.action == 'closed'
+    if: github.event_name == 'pull_request_target' && github.event.action == 'closed'
     permissions:
       pull-requests: write
     uses: ./.github/workflows/discord-notify.yaml
@@ -347,7 +455,7 @@ jobs:
       status: ${{ github.event.pull_request.merged && 'merged' || 'closed' }}
 
   discord-deploy:
-    needs: [build, deploy-production]
+    needs: [build-production, deploy-production]
     if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
       contents: read
@@ -357,5 +465,5 @@ jobs:
       DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
     with:
       event: deploy
-      status: ${{ needs.build.result == 'success' && needs.deploy-production.result || needs.build.result }}
+      status: ${{ needs.build-production.result == 'success' && needs.deploy-production.result || needs.build-production.result }}
       tags: ${{ inputs.discord_tags }}
