@@ -65,14 +65,15 @@ env:
 jobs:
   # pull_request_target loads this workflow from the base branch. The PR can
   # change source and lockfiles, but it cannot add a step that reads NPM_TOKEN.
-  # This job only populates a pnpm store; it never executes project or package
-  # lifecycle code. The store crosses into the tokenless build through an
-  # artifact and the GitHub-hosted runners are isolated per job.
+  # This job only handles organization-member PRs and populates a pnpm store;
+  # it never executes project or package lifecycle code. The store crosses into
+  # the tokenless build through an artifact and runners are isolated per job.
   preview-dependencies:
     if: >-
       github.event_name == 'pull_request_target' &&
       github.event.action != 'closed' &&
-      github.event.pull_request.head.repo.full_name == github.repository
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      contains(fromJSON('["OWNER","MEMBER"]'), github.event.pull_request.author_association)
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -96,42 +97,42 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
 
-      - name: Reject executable dependency sources
-        shell: bash
-        run: |
-          ruby <<'RUBY'
-          require "yaml"
-
-          source = /(?:\A|@)(?:git\+|git@|ssh:\/\/|github:|gitlab:|bitbucket:|https?:\/\/|file:|link:|workspace:)/i
-          failures = []
-          visit = lambda do |value, path|
-            case value
-            when Hash
-              value.each do |key, child|
-                name = key.to_s
-                failures << (path + [name]).join(".") if source.match?(name)
-                if path.last == "resolution" && %w[directory tarball].include?(name)
-                  failures << (path + [name]).join(".")
-                end
-                visit.call(child, path + [name])
-              end
-            when Array
-              value.each_with_index { |child, index| visit.call(child, path + [index.to_s]) }
-            when String
-              failures << path.join(".") if source.match?(value)
-            end
-          end
-
-          visit.call(YAML.safe_load(File.read("pnpm-lock.yaml"), aliases: true), [])
-          abort "Preview dependency lock contains a non-registry source at #{failures.uniq.join(', ')}" unless failures.empty?
-          RUBY
-
-      - name: Fetch dependencies without lifecycle execution
+      - name: Validate and fetch dependencies without lifecycle execution
         shell: bash
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
           PNPM_STORE_PATH: ${{ runner.temp }}/pnpm-store
         run: |
+          validate_lock() {
+            ruby - "$1" <<'RUBY'
+          require "yaml"
+
+          path = ARGV.fetch(0)
+          source = /(?:\A|@)(?:git\+|git@|ssh:\/\/|github:|gitlab:|bitbucket:|https?:\/\/|file:|link:|workspace:)/i
+          failures = []
+          visit = lambda do |value, keys|
+            case value
+            when Hash
+              value.each do |key, child|
+                name = key.to_s
+                failures << (keys + [name]).join(".") if source.match?(name)
+                if keys.last == "resolution" && %w[directory tarball].include?(name)
+                  failures << (keys + [name]).join(".")
+                end
+                visit.call(child, keys + [name])
+              end
+            when Array
+              value.each_with_index { |child, index| visit.call(child, keys + [index.to_s]) }
+            when String
+              failures << keys.join(".") if source.match?(value)
+            end
+          end
+
+          visit.call(YAML.safe_load(File.read(path), aliases: true), [])
+          abort "Preview dependency lock contains a non-registry source at #{failures.uniq.join(', ')}" unless failures.empty?
+          RUBY
+          }
+
           rm -f -- .npmrc .pnpmfile.cjs
           TRUSTED_HOME="${RUNNER_TEMP}/cellarnode-preview-home"
           trap 'rm -rf -- "$TRUSTED_HOME"' EXIT
@@ -141,7 +142,12 @@ jobs:
             '@cellarnode:registry=https://registry.npmjs.org/' \
             "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" \
             > "$TRUSTED_HOME/.npmrc"
-          HOME="$TRUSTED_HOME" pnpm fetch ${{ inputs.frozen_lockfile && '--frozen-lockfile' || '--no-frozen-lockfile' }} --ignore-scripts --ignore-pnpmfile --store-dir "$PNPM_STORE_PATH"
+          validate_lock pnpm-lock.yaml
+          if [ "${{ inputs.frozen_lockfile }}" = "false" ]; then
+            HOME="$TRUSTED_HOME" pnpm install --lockfile-only --no-frozen-lockfile --ignore-scripts --ignore-pnpmfile --store-dir "$PNPM_STORE_PATH"
+            validate_lock pnpm-lock.yaml
+          fi
+          HOME="$TRUSTED_HOME" pnpm fetch --frozen-lockfile --ignore-scripts --ignore-pnpmfile --store-dir "$PNPM_STORE_PATH"
           cp pnpm-lock.yaml "$RUNNER_TEMP/resolved-pnpm-lock.yaml"
 
       - name: Upload dependency store
@@ -159,7 +165,8 @@ jobs:
     if: >-
       github.event_name == 'pull_request_target' &&
       github.event.action != 'closed' &&
-      github.event.pull_request.head.repo.full_name == github.repository
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      contains(fromJSON('["OWNER","MEMBER"]'), github.event.pull_request.author_association)
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -196,7 +203,7 @@ jobs:
         run: |
           rm -f -- .npmrc .pnpmfile.cjs
           cp "$RUNNER_TEMP/preview-dependencies/resolved-pnpm-lock.yaml" pnpm-lock.yaml
-          pnpm install --offline ${{ inputs.frozen_lockfile && '--frozen-lockfile' || '--no-frozen-lockfile' }} --ignore-scripts --ignore-pnpmfile --store-dir "$PNPM_STORE_PATH"
+          pnpm install --offline --frozen-lockfile --ignore-scripts --ignore-pnpmfile --store-dir "$PNPM_STORE_PATH"
 
       - name: Rebuild dependencies
         run: pnpm rebuild
@@ -343,7 +350,8 @@ jobs:
     if: >-
       github.event_name == 'pull_request_target' &&
       github.event.action != 'closed' &&
-      github.event.pull_request.head.repo.full_name == github.repository
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      contains(fromJSON('["OWNER","MEMBER"]'), github.event.pull_request.author_association)
     runs-on: self-hosted-k8s
     container:
       image: europe-north1-docker.pkg.dev/festive-terrain-478011-h0/beveriq/ci-runner@sha256:e57fadf58eb4e125a101f366a9cd97cb022e3cb8a9eae6028cefdfb0003b2960
@@ -480,7 +488,8 @@ jobs:
     if: >-
       github.event_name == 'pull_request_target' &&
       github.event.action == 'opened' &&
-      github.event.pull_request.head.repo.full_name == github.repository
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      contains(fromJSON('["OWNER","MEMBER"]'), github.event.pull_request.author_association)
     permissions:
       pull-requests: write
     uses: ./.github/workflows/discord-notify.yaml
@@ -497,6 +506,7 @@ jobs:
       github.event_name == 'pull_request_target' &&
       github.event.action != 'closed' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
+      contains(fromJSON('["OWNER","MEMBER"]'), github.event.pull_request.author_association) &&
       needs.preview-dependencies.result != 'cancelled'
     permissions:
       pull-requests: write
