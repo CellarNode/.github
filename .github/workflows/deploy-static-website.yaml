@@ -309,7 +309,7 @@ jobs:
   discord-thread-open:
     if: github.event_name == 'pull_request' && github.event.action == 'opened'
     permissions:
-      issues: write
+      pull-requests: write
     uses: ./.github/workflows/discord-notify.yaml
     secrets:
       DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
@@ -325,7 +325,7 @@ jobs:
       github.event.action != 'closed' &&
       needs.build.result != 'cancelled'
     permissions:
-      issues: write
+      pull-requests: write
     uses: ./.github/workflows/discord-notify.yaml
     secrets:
       DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
@@ -338,7 +338,7 @@ jobs:
   discord-thread-close:
     if: github.event_name == 'pull_request' && github.event.action == 'closed'
     permissions:
-      issues: write
+      pull-requests: write
     uses: ./.github/workflows/discord-notify.yaml
     secrets:
       DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
@@ -349,7 +349,9 @@ jobs:
   discord-deploy:
     needs: [build, deploy-production]
     if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
-    permissions: {}
+    permissions:
+      contents: read
+      pull-requests: read
     uses: ./.github/workflows/discord-notify.yaml
     secrets:
       DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
