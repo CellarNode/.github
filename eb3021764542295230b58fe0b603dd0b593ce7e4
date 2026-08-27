@@ -1,0 +1,30 @@
+.github/workflows/deploy-static-website.yaml
+  s_e494ddb2690bdf::t_d74e2aae963a78 59,184-185,224-225
+  s_e494ddb2690bdf::t_aafef9fd0a959d 634-644
+  s_e494ddb2690bdf::t_ff4809fe25820e 138
+  s_e494ddb2690bdf::t_79fdd09df6ed31 305-313,324-353
+  s_e494ddb2690bdf::t_799d08242f1f95 354
+.github/tests/deploy-static-job-boundaries.test.rb
+  s_e494ddb2690bdf::t_c6c274f5884fda 62-63,96,98,120,127-144
+  s_e494ddb2690bdf::t_2f6f8759427456 4,11,43,54,57,60-61,91-95,97,99-119,121-126,145-147
+  s_e494ddb2690bdf::t_b91f5b7a2fd913 148
+.github/tests/deploy-static-lock-validator.test.rb
+  s_e494ddb2690bdf::t_c6c274f5884fda 15,24-41,44,51,59,68,77,148,157,166,174,182,190,198,366
+  s_e494ddb2690bdf::t_2f6f8759427456 21-23,270
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.0",
+  "base_commit_sha": "eb3021764542295230b58fe0b603dd0b593ce7e4",
+  "prompts": {},
+  "sessions": {
+    "s_e494ddb2690bdf": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0333d-6bf6-78b1-91b9-1f7413f8c7de",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "mjnong <marcusnagy@icloud.com>"
+    }
+  }
+}
