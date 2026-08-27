@@ -167,6 +167,41 @@ jobs:
         run: |
           git diff --exit-code && echo "changed=false" >> $GITHUB_OUTPUT || echo "changed=true" >> $GITHUB_OUTPUT
 
+      # CEL-1259 step 1/3 — close predecessor bot PRs before opening a new
+      # one. Each run is a full snapshot of the same translation state, so
+      # once a fresh diff is about to be opened, every older
+      # `chore/i18n-pipeline-*` PR is superseded. Without this the queue
+      # only grows (producer-dashboard hit 123 open PRs / 170 branches).
+      # Deliberately fail-safe: `continue-on-error` at the step level plus
+      # explicit `|| true`-equivalent handling + `::warning::` around both
+      # the list and the close/delete-branch calls, so a transient `gh`
+      # failure here (rate limit, a PR someone already merged/closed by
+      # hand) degrades to a warning instead of reddening the whole
+      # pipeline. Scoped to `changed == 'true'` — a no-diff run has nothing
+      # to supersede, so leave any existing predecessor PR alone.
+      - name: Close predecessor i18n pipeline PRs
+        if: steps.diff.outputs.changed == 'true'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -u
+          PREDECESSORS=$(gh pr list --state open --json number,headRefName \
+            --jq '.[] | select(.headRefName | startswith("chore/i18n-pipeline-")) | "\(.number) \(.headRefName)"') || {
+            echo "::warning::Failed to list predecessor i18n pipeline PRs; skipping close step."
+            PREDECESSORS=""
+          }
+          if [ -z "$PREDECESSORS" ]; then
+            echo "No predecessor i18n pipeline PRs to close."
+          else
+            echo "$PREDECESSORS" | while read -r NUM BRANCH; do
+              echo "Closing predecessor PR #$NUM ($BRANCH)"
+              gh pr close "$NUM" --delete-branch \
+                --comment "Superseded by a newer i18n pipeline run." \
+                || echo "::warning::Failed to close predecessor PR #$NUM ($BRANCH); leaving it open."
+            done
+          fi
+
       - name: Create PR
         if: steps.diff.outputs.changed == 'true'
         env:
