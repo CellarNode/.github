@@ -56,24 +56,20 @@ on:
 
 concurrency:
   group: static-deploy-${{ inputs.website_slug }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request_target' && github.event.action != 'closed' }}
 
 env:
   PROJECT_ID: festive-terrain-478011-h0
   GCS_BUCKET: websites-deploy
 
 jobs:
-  # pull_request_target loads this workflow from the base branch. The PR can
-  # change source and lockfiles, but it cannot add a step that reads NPM_TOKEN.
-  # This job only handles organization-member PRs and populates a pnpm store;
-  # it never executes project or package lifecycle code. The store crosses into
-  # the tokenless build through an artifact and runners are isolated per job.
-  preview-dependencies:
+  build-preview:
     if: >-
       github.event_name == 'pull_request_target' &&
       github.event.action != 'closed' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
-      contains(fromJSON('["OWNER","MEMBER"]'), github.event.pull_request.author_association)
+      contains(fromJSON('["OWNER","MEMBER"]'), github.event.pull_request.author_association) &&
+      github.event.sender.login == github.event.pull_request.user.login
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -90,18 +86,15 @@ jobs:
         with:
           node-version: ${{ inputs.node_version }}
 
-      - name: Checkout pull-request dependency lock
+      - name: Checkout pull-request source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: ${{ github.event.pull_request.head.repo.full_name }}
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
 
-      - name: Validate and fetch dependencies without lifecycle execution
+      - name: Validate and install dependencies without credentials
         shell: bash
-        env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-          PNPM_STORE_PATH: ${{ runner.temp }}/pnpm-store
         run: |
           validate_lock() {
             ruby - "$1" <<'RUBY'
@@ -156,76 +149,9 @@ jobs:
             echo "pnpm-lock.yaml must be a regular file" >&2
             exit 1
           fi
-          TRUSTED_HOME="${RUNNER_TEMP}/cellarnode-preview-home"
-          trap 'rm -rf -- "$TRUSTED_HOME"' EXIT
-          mkdir -p "$TRUSTED_HOME"
-          umask 077
-          printf '%s\n' \
-            '@cellarnode:registry=https://registry.npmjs.org/' \
-            "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" \
-            > "$TRUSTED_HOME/.npmrc"
           validate_lock pnpm-lock.yaml
-          if [ "${{ inputs.frozen_lockfile }}" = "false" ]; then
-            HOME="$TRUSTED_HOME" pnpm install --lockfile-only --no-frozen-lockfile --ignore-scripts --ignore-pnpmfile --store-dir "$PNPM_STORE_PATH"
-            validate_lock pnpm-lock.yaml
-          fi
-          HOME="$TRUSTED_HOME" pnpm fetch --frozen-lockfile --ignore-scripts --ignore-pnpmfile --store-dir "$PNPM_STORE_PATH"
-          cp pnpm-lock.yaml "$RUNNER_TEMP/resolved-pnpm-lock.yaml"
-
-      - name: Upload dependency store
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: preview-dependencies-${{ inputs.website_slug }}
-          path: |
-            ${{ runner.temp }}/pnpm-store
-            ${{ runner.temp }}/resolved-pnpm-lock.yaml
-          if-no-files-found: error
-          retention-days: 1
-
-  build-preview:
-    needs: preview-dependencies
-    if: >-
-      github.event_name == 'pull_request_target' &&
-      github.event.action != 'closed' &&
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      contains(fromJSON('["OWNER","MEMBER"]'), github.event.pull_request.author_association)
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-
-    steps:
-      - name: Set up pnpm
-        uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa
-        with:
-          version: ${{ inputs.pnpm_version }}
-          run_install: false
-
-      - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
-        with:
-          node-version: ${{ inputs.node_version }}
-
-      - name: Checkout pull-request source
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          repository: ${{ github.event.pull_request.head.repo.full_name }}
-          ref: ${{ github.event.pull_request.head.sha }}
-          persist-credentials: false
-
-      - name: Download dependency store
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          name: preview-dependencies-${{ inputs.website_slug }}
-          path: ${{ runner.temp }}/preview-dependencies
-
-      - name: Install dependencies offline
-        shell: bash
-        env:
-          PNPM_STORE_PATH: ${{ runner.temp }}/preview-dependencies/pnpm-store
-        run: |
-          rm -f -- .npmrc .pnpmfile.cjs
-          cp "$RUNNER_TEMP/preview-dependencies/resolved-pnpm-lock.yaml" pnpm-lock.yaml
-          pnpm install --offline --frozen-lockfile --ignore-scripts --ignore-pnpmfile --store-dir "$PNPM_STORE_PATH"
+          pnpm install ${{ inputs.frozen_lockfile && '--frozen-lockfile' || '--no-frozen-lockfile' }} --ignore-scripts --ignore-pnpmfile
+          validate_lock pnpm-lock.yaml
 
       - name: Rebuild dependencies
         run: pnpm rebuild
@@ -382,7 +308,8 @@ jobs:
       github.event_name == 'pull_request_target' &&
       github.event.action != 'closed' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
-      contains(fromJSON('["OWNER","MEMBER"]'), github.event.pull_request.author_association)
+      contains(fromJSON('["OWNER","MEMBER"]'), github.event.pull_request.author_association) &&
+      github.event.sender.login == github.event.pull_request.user.login
     runs-on: self-hosted-k8s
     container:
       image: europe-north1-docker.pkg.dev/festive-terrain-478011-h0/beveriq/ci-runner@sha256:e57fadf58eb4e125a101f366a9cd97cb022e3cb8a9eae6028cefdfb0003b2960
@@ -487,8 +414,7 @@ jobs:
     if: >-
       github.event_name == 'pull_request_target' &&
       github.event.action == 'closed' &&
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      contains(fromJSON('["OWNER","MEMBER"]'), github.event.pull_request.author_association)
+      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: self-hosted-k8s
     container:
       image: europe-north1-docker.pkg.dev/festive-terrain-478011-h0/beveriq/ci-runner@sha256:e57fadf58eb4e125a101f366a9cd97cb022e3cb8a9eae6028cefdfb0003b2960
@@ -528,7 +454,8 @@ jobs:
       github.event_name == 'pull_request_target' &&
       github.event.action == 'opened' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
-      contains(fromJSON('["OWNER","MEMBER"]'), github.event.pull_request.author_association)
+      contains(fromJSON('["OWNER","MEMBER"]'), github.event.pull_request.author_association) &&
+      github.event.sender.login == github.event.pull_request.user.login
     permissions:
       pull-requests: write
     uses: ./.github/workflows/discord-notify.yaml
@@ -539,14 +466,15 @@ jobs:
       tags: ${{ inputs.discord_tags }}
 
   discord-build-update:
-    needs: [preview-dependencies, build-preview, deploy-preview, discord-thread-open]
+    needs: [build-preview, deploy-preview, discord-thread-open]
     if: >-
       always() &&
       github.event_name == 'pull_request_target' &&
       github.event.action != 'closed' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       contains(fromJSON('["OWNER","MEMBER"]'), github.event.pull_request.author_association) &&
-      needs.preview-dependencies.result != 'cancelled'
+      github.event.sender.login == github.event.pull_request.user.login &&
+      needs.build-preview.result != 'cancelled'
     permissions:
       pull-requests: write
     uses: ./.github/workflows/discord-notify.yaml
@@ -554,15 +482,14 @@ jobs:
       DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
     with:
       event: thread_update
-      status: ${{ needs.preview-dependencies.result == 'success' && (needs.build-preview.result == 'success' && (needs.deploy-preview.result == 'skipped' && 'success' || needs.deploy-preview.result) || needs.build-preview.result) || needs.preview-dependencies.result }}
+      status: ${{ needs.build-preview.result == 'success' && (needs.deploy-preview.result == 'skipped' && 'success' || needs.deploy-preview.result) || needs.build-preview.result }}
       preview_url: ${{ needs.deploy-preview.result == 'success' && format('https://{0}-pr{1}.dev.cellarnode.com', inputs.website_slug, github.event.pull_request.number) || '' }}
 
   discord-thread-close:
     if: >-
       github.event_name == 'pull_request_target' &&
       github.event.action == 'closed' &&
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      contains(fromJSON('["OWNER","MEMBER"]'), github.event.pull_request.author_association)
+      github.event.pull_request.head.repo.full_name == github.repository
     permissions:
       pull-requests: write
     uses: ./.github/workflows/discord-notify.yaml
