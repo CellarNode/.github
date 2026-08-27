@@ -62,6 +62,16 @@ on:
 jobs:
   sync-translate:
     runs-on: ubuntu-latest
+    # CEL-1259 — serialize per consumer repo. `github.repository` in a reusable
+    # workflow resolves to the *caller's* repo, so each consumer gets its own
+    # queue and consumers never block each other. Without this, two overlapping
+    # runs each list predecessors before either creates its PR, so both PRs
+    # survive and the "at most one open i18n PR" invariant breaks by
+    # construction. `cancel-in-progress: false` because cancelling mid-run can
+    # leave a pushed branch with no PR attached to it.
+    concurrency:
+      group: i18n-pipeline-${{ github.repository }}
+      cancel-in-progress: false
     permissions:
       contents: write
       pull-requests: write
@@ -167,58 +177,118 @@ jobs:
         run: |
           git diff --exit-code && echo "changed=false" >> $GITHUB_OUTPUT || echo "changed=true" >> $GITHUB_OUTPUT
 
-      # CEL-1259 step 1/3 — close predecessor bot PRs before opening a new
-      # one. Each run is a full snapshot of the same translation state, so
-      # once a fresh diff is about to be opened, every older
-      # `chore/i18n-pipeline-*` PR is superseded. Without this the queue
-      # only grows (producer-dashboard hit 123 open PRs / 170 branches).
-      # Deliberately fail-safe: `continue-on-error` at the step level plus
-      # explicit `|| true`-equivalent handling + `::warning::` around both
-      # the list and the close/delete-branch calls, so a transient `gh`
-      # failure here (rate limit, a PR someone already merged/closed by
-      # hand) degrades to a warning instead of reddening the whole
-      # pipeline. Scoped to `changed == 'true'` — a no-diff run has nothing
-      # to supersede, so leave any existing predecessor PR alone.
-      - name: Close predecessor i18n pipeline PRs
-        if: steps.diff.outputs.changed == 'true'
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -u
-          PREDECESSORS=$(gh pr list --state open --json number,headRefName \
-            --jq '.[] | select(.headRefName | startswith("chore/i18n-pipeline-")) | "\(.number) \(.headRefName)"') || {
-            echo "::warning::Failed to list predecessor i18n pipeline PRs; skipping close step."
-            PREDECESSORS=""
-          }
-          if [ -z "$PREDECESSORS" ]; then
-            echo "No predecessor i18n pipeline PRs to close."
-          else
-            echo "$PREDECESSORS" | while read -r NUM BRANCH; do
-              echo "Closing predecessor PR #$NUM ($BRANCH)"
-              gh pr close "$NUM" --delete-branch \
-                --comment "Superseded by a newer i18n pipeline run." \
-                || echo "::warning::Failed to close predecessor PR #$NUM ($BRANCH); leaving it open."
-            done
-          fi
-
+      # CEL-1259 step 1/3 — the replacement PR is opened FIRST, and only then
+      # are the predecessors it supersedes closed (next step). Ordering matters:
+      # closing first meant a failed `git push` / `gh pr create` destroyed every
+      # predecessor PR *and* its branch with nothing opened in their place.
+      #
+      # The branch name carries seconds (`%H%M%S`, was `%H%M`) so two runs that
+      # reach this step inside the same minute cannot collide on one branch name
+      # and turn the second push into a non-fast-forward rejection.
       - name: Create PR
+        id: create_pr
         if: steps.diff.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          BRANCH="chore/i18n-pipeline-$(date +%Y%m%d-%H%M)"
+          set -euo pipefail
+          BRANCH="chore/i18n-pipeline-$(date +%Y%m%d-%H%M%S)"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git checkout -b "$BRANCH"
           git add "${{ inputs.locales_path }}/" .polyglot-cache.json src/ || true
           git commit -m "chore(i18n): sync + translate"
           git push origin "$BRANCH"
-          gh pr create \
+          cat > "$RUNNER_TEMP/i18n-pr-body.md" <<'PR_BODY_EOF'
+          Automated i18n pipeline: synced locale files, translated via Gemini, regenerated types.
+
+          Every run is a full snapshot of the same translation state, so this PR
+          supersedes all older open `chore/i18n-pipeline-*` PRs. The same run closes
+          them and deletes their branches in the step right after this one
+          (CEL-1259). No comment is posted on each close — a bulk drain of a large
+          backlog would trip GitHub's secondary rate limit on content creation, so
+          the supersession notice lives here instead.
+          PR_BODY_EOF
+          PR_URL=$(gh pr create \
             --title "chore(i18n): sync + translate" \
-            --body "Automated i18n pipeline: synced locale files, translated via Gemini, regenerated types." \
+            --body-file "$RUNNER_TEMP/i18n-pr-body.md" \
             --base "${GITHUB_REF_NAME}" \
-            --head "$BRANCH"
+            --head "$BRANCH")
+          echo "Opened $PR_URL"
+          PR_NUMBER="${PR_URL##*/}"
+          case "$PR_NUMBER" in
+            ''|*[!0-9]*)
+              echo "::warning::Could not parse a PR number out of '$PR_URL'; predecessors will be left for the next run to close."
+              PR_NUMBER=""
+              ;;
+          esac
+          {
+            echo "pr_number=$PR_NUMBER"
+            echo "branch=$BRANCH"
+          } >> "$GITHUB_OUTPUT"
+
+      # CEL-1259 step 1/3 — close the predecessor bot PRs the PR above
+      # supersedes. Without this the queue only grows (producer-dashboard hit
+      # 151 open `chore/i18n-pipeline-*` PRs / 170 branches).
+      #
+      # `gh api --paginate` rather than `gh pr list`: the latter silently caps at
+      # its default `--limit 30`, which on producer-dashboard's live backlog
+      # matched 27 of 151 — a partial drain that never converges, and zero drain
+      # for any repo whose 30 newest open PRs are all non-i18n.
+      #
+      # Gated on a parsed `pr_number` and skips that number *and* this run's
+      # branch, so it can never close the PR the previous step just opened.
+      #
+      # Deliberately fail-safe: `continue-on-error` at the step level plus
+      # explicit fallback handling + `::warning::` around both the list and the
+      # close/delete-branch calls, so a transient `gh` failure (rate limit, a PR
+      # someone already merged/closed by hand) degrades to a warning instead of
+      # reddening the whole pipeline. Scoped to `changed == 'true'` — a no-diff
+      # run opens nothing, so it has nothing to supersede.
+      - name: Close predecessor i18n pipeline PRs
+        if: success() && steps.diff.outputs.changed == 'true' && steps.create_pr.outputs.pr_number != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEW_PR_NUMBER: ${{ steps.create_pr.outputs.pr_number }}
+          NEW_BRANCH: ${{ steps.create_pr.outputs.branch }}
+        run: |
+          set -u
+          PREDECESSORS=$(gh api --paginate \
+            -H "Accept: application/vnd.github+json" \
+            "repos/${GITHUB_REPOSITORY}/pulls?state=open&per_page=100" \
+            --jq '.[] | select(.head.ref | startswith("chore/i18n-pipeline-")) | "\(.number) \(.head.ref)"') || {
+            echo "::warning::Failed to list predecessor i18n pipeline PRs; skipping close step."
+            PREDECESSORS=""
+          }
+          if [ -z "$PREDECESSORS" ]; then
+            echo "No open i18n pipeline PRs found."
+            exit 0
+          fi
+          TOTAL=$(printf '%s\n' "$PREDECESSORS" | grep -c . || true)
+          echo "Found $TOTAL open i18n pipeline PR(s), including #$NEW_PR_NUMBER opened by this run."
+          # Each close is 2 mutating calls (close + ref delete). Pace them once
+          # the backlog is large so a first-time drain of a repo with >100
+          # predecessors stays clear of GitHub's secondary rate limits.
+          THROTTLE=no
+          if [ "$TOTAL" -gt 50 ]; then
+            THROTTLE=yes
+            echo "Backlog exceeds 50 PRs — pacing closes at 1s intervals."
+          fi
+          printf '%s\n' "$PREDECESSORS" | while read -r NUM BRANCH; do
+            [ -n "$NUM" ] || continue
+            if [ "$NUM" = "$NEW_PR_NUMBER" ] || [ "$BRANCH" = "$NEW_BRANCH" ]; then
+              echo "Skipping PR #$NUM ($BRANCH) — opened by this run."
+              continue
+            fi
+            echo "Closing predecessor PR #$NUM ($BRANCH)"
+            if ! gh pr close "$NUM" --delete-branch; then
+              echo "::warning::gh pr close failed for predecessor PR #$NUM ($BRANCH) — it may still be open, or it closed but its branch $BRANCH was not deleted. Check manually."
+            fi
+            if [ "$THROTTLE" = "yes" ]; then
+              sleep 1
+            fi
+          done
 
   # CEL-384 prong 2: alert on workflow failure so the next silent-failure
   # incident becomes a 15-minute discovery instead of 7-20 days (CEL-361 /
