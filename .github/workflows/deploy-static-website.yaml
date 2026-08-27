@@ -755,7 +755,6 @@ jobs:
               username: actor,
             });
             const authorized = pullRequest.state === 'closed' &&
-              pullRequest.user?.login === actor &&
               pullRequest.head.repo?.full_name === repository &&
               ['admin', 'maintain', 'write'].includes(access.permission);
             if (!authorized) {

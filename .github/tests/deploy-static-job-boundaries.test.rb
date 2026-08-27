@@ -190,19 +190,19 @@ abort "Cleanup authorization recheck must use pinned GitHub Script" unless clean
 abort "Cleanup authorization recheck must use the job token" unless cleanup_authorization.fetch("with", {}).fetch("github-token", nil) == "${{ github.token }}"
 cleanup_script = cleanup_authorization.fetch("with").fetch("script")
 abort "Cleanup authorization must require a closed pull request" unless cleanup_script.include?("pullRequest.state === 'closed'")
-abort "Cleanup authorization must require actor ownership" unless cleanup_script.include?("pullRequest.user?.login === actor")
+abort "Cleanup authorization must allow a write-capable closer who is not the pull-request author" if cleanup_script.include?("pullRequest.user?.login === actor")
 abort "Cleanup authorization must require current write permission" unless cleanup_script.include?("['admin', 'maintain', 'write'].includes(access.permission)")
 
 cleanup_base_pull_request = {
   "state" => "closed",
-  "user" => { "login" => "maintainer" },
+  "user" => { "login" => "author" },
   "head" => { "repo" => { "full_name" => "CellarNode/site" } },
 }
 cleanup_cases = {
-  "current trusted author" => [cleanup_base_pull_request, "write", true],
+  "write-capable maintainer closes another author's pull request" => [cleanup_base_pull_request, "write", true],
+  "write-capable author closes own pull request" => [cleanup_base_pull_request.merge("user" => { "login" => "maintainer" }), "write", true],
   "open pull request" => [cleanup_base_pull_request.merge("state" => "open"), "write", false],
   "forked head" => [cleanup_base_pull_request.merge("head" => { "repo" => { "full_name" => "attacker/site" } }), "write", false],
-  "different author" => [cleanup_base_pull_request.merge("user" => { "login" => "other-user" }), "write", false],
   "revoked permission" => [cleanup_base_pull_request, "read", false],
 }
 cleanup_cases.each do |name, (pull_request, permission, expected)|
@@ -222,9 +222,10 @@ cleanup_cases.each do |name, (pull_request, permission, expected)|
         rest: {
           pulls: { get: async () => ({ data: pullRequest }) },
           repos: {
-            getCollaboratorPermissionLevel: async () => ({
-              data: { permission: process.env.CURRENT_PERMISSION },
-            }),
+            getCollaboratorPermissionLevel: async ({ username }) => {
+              if (username !== process.env.ACTOR) throw new Error(`unexpected permission subject: ${username}`);
+              return { data: { permission: process.env.CURRENT_PERMISSION } };
+            },
           },
         },
       };
