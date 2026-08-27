@@ -423,14 +423,15 @@ jobs:
             const previewUrl = `https://${slug}-pr${prNumber}.dev.cellarnode.com`;
             const body = `## Preview Deployment\n\nPreview available at: ${previewUrl}`;
 
-            const { data: comments } = await github.rest.issues.listComments({
+            const comments = await github.paginate(github.rest.issues.listComments, {
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: prNumber,
+              per_page: 100,
             });
 
             const botComment = comments.find(comment =>
-              comment.user.type === 'Bot' && comment.body.includes('Preview Deployment')
+              comment.user?.type === 'Bot' && (comment.body ?? '').includes('Preview Deployment')
             );
 
             if (botComment) {
@@ -482,7 +483,11 @@ jobs:
           WEBSITE_SLUG: ${{ inputs.website_slug }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          gcloud storage rm --recursive "gs://${GCS_BUCKET}/preview/${WEBSITE_SLUG}/pr${PR_NUMBER}" || true
+          PREVIEW_PREFIX="gs://${GCS_BUCKET}/preview/${WEBSITE_SLUG}/pr${PR_NUMBER}"
+          PREVIEW_OBJECT=$(gcloud storage objects list "$PREVIEW_PREFIX" --limit=1 --format='value(name)')
+          if [ -n "$PREVIEW_OBJECT" ]; then
+            gcloud storage rm --recursive "$PREVIEW_PREFIX"
+          fi
 
   discord-thread-open:
     if: >-
