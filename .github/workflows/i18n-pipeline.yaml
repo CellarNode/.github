@@ -236,16 +236,22 @@ jobs:
           backlog would trip GitHub's secondary rate limit on content creation, so
           the supersession notice lives here instead.
           PR_BODY_EOF
-          PR_URL=$(gh pr create \
-            --title "chore(i18n): sync + translate" \
-            --body-file "$RUNNER_TEMP/i18n-pr-body.md" \
-            --base "${GITHUB_REF_NAME}" \
-            --head "$BRANCH")
-          echo "Opened $PR_URL"
-          PR_NUMBER="${PR_URL##*/}"
+          # REST, not `gh pr create`: fine-grained PATs cannot authenticate
+          # against api.github.com/graphql (observed live: HTTP 401 "Bad
+          # credentials (https://api.github.com/graphql)" from a valid PAT
+          # whose git push succeeded seconds earlier, run 33106558320).
+          # `gh pr create` touches GraphQL; `gh api` POST /pulls is pure REST
+          # and works with fine-grained PATs.
+          PR_NUMBER=$(gh api "repos/${GITHUB_REPOSITORY}/pulls" \
+            -f title="chore(i18n): sync + translate" \
+            -F body=@"$RUNNER_TEMP/i18n-pr-body.md" \
+            -f base="${GITHUB_REF_NAME}" \
+            -f head="$BRANCH" \
+            --jq '.number')
+          echo "Opened PR #$PR_NUMBER"
           case "$PR_NUMBER" in
             ''|*[!0-9]*)
-              echo "::warning::Could not parse a PR number out of '$PR_URL'; predecessors will be left for the next run to close."
+              echo "::warning::Could not parse a PR number out of the create response; predecessors will be left for the next run to close."
               PR_NUMBER=""
               ;;
           esac
@@ -328,11 +334,20 @@ jobs:
         if: success() && steps.diff.outputs.changed == 'true' && steps.create_pr.outputs.pr_number != ''
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.I18N_PIPELINE_TOKEN }}
+          # The CALL uses github.token, not the PAT: `gh pr merge --auto` is a
+          # GraphQL mutation (enablePullRequestAutoMerge) and fine-grained PATs
+          # cannot authenticate against the GraphQL API (the same 401 that
+          # broke `gh pr create`, run 33106558320). github.token is
+          # GraphQL-capable and enabling auto-merge on someone else's PR only
+          # needs repo write. PAT_CONFIGURED still gates the step: a
+          # github.token-AUTHORED PR gets no CI, so arming auto-merge on one
+          # would either hang forever or (no required checks) merge ungated.
+          GH_TOKEN: ${{ github.token }}
+          PAT_CONFIGURED: ${{ secrets.I18N_PIPELINE_TOKEN != '' }}
           NEW_PR_NUMBER: ${{ steps.create_pr.outputs.pr_number }}
         run: |
           set -u
-          if [ -z "${GH_TOKEN:-}" ]; then
+          if [ "${PAT_CONFIGURED}" != "true" ]; then
             echo "I18N_PIPELINE_TOKEN not configured — skipping auto-merge (CEL-1259 step 2 pending)."
             exit 0
           fi
