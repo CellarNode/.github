@@ -178,10 +178,86 @@ manifest_fixtures = {
   "workspace manifest package" => ["public-package", "workspace:*", false],
   "github shorthand manifest package" => ["public-package", "attacker/package", false],
   "tarball manifest package" => ["public-package", "package.tgz", false],
+  "git workspace override" => [
+    "public-package",
+    "^1.0.0",
+    false,
+    <<~YAML,
+      overrides:
+        public-package: git+https://evil.example/package.git
+    YAML
+  ],
+  "external workspace config dependency" => [
+    "public-package",
+    "^1.0.0",
+    false,
+    <<~YAML,
+      configDependencies:
+        malicious-config: https://evil.example/config.tgz
+    YAML
+  ],
+  "registry workspace override" => [
+    "public-package",
+    "^1.0.0",
+    true,
+    <<~YAML,
+      overrides:
+        "@radix-ui/react-dismissable-layer": "1.1.15"
+    YAML
+  ],
+  "external workspace catalog" => [
+    "public-package",
+    "^1.0.0",
+    false,
+    <<~YAML,
+      catalogs:
+        default:
+          public-package: https://evil.example/package.tgz
+    YAML
+  ],
+  "external workspace package extension" => [
+    "public-package",
+    "^1.0.0",
+    false,
+    <<~YAML,
+      packageExtensions:
+        "public-package@1.0.0":
+          dependencies:
+            injected-package: git+https://evil.example/package.git
+    YAML
+  ],
+  "workspace dependency patch" => [
+    "public-package",
+    "^1.0.0",
+    false,
+    <<~YAML,
+      patchedDependencies:
+        "public-package@1.0.0": patches/public-package.patch
+    YAML
+  ],
+  "workspace named registry" => [
+    "public-package",
+    "^1.0.0",
+    false,
+    <<~YAML,
+      namedRegistries:
+        attacker: https://evil.example/
+    YAML
+  ],
+  "workspace build allowlist" => [
+    "public-package",
+    "^1.0.0",
+    true,
+    <<~YAML,
+      onlyBuiltDependencies:
+        - "@swc/core"
+        - esbuild
+    YAML
+  ],
 }
 
 dependency_scripts.each do |job_name, (validation_script, non_frozen_script)|
-  manifest_fixtures.each do |name, (package, version, expected_install)|
+  manifest_fixtures.each do |name, (package, version, expected_install, workspace)|
     Dir.mktmpdir("cel1328-manifest-boundary") do |directory|
       File.write(
         File.join(directory, "package.json"),
@@ -203,6 +279,7 @@ dependency_scripts.each do |job_name, (validation_script, non_frozen_script)|
                 integrity: sha512-safe
         YAML
       )
+      File.write(File.join(directory, "pnpm-workspace.yaml"), workspace) if workspace
 
       bin_directory = File.join(directory, "bin")
       Dir.mkdir(bin_directory)

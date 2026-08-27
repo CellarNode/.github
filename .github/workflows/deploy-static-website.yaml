@@ -164,15 +164,19 @@ jobs:
           cat > "$MANIFEST_VALIDATOR" <<'RUBY'
           require "find"
           require "json"
+          require "yaml"
 
           private_package = /@cellarnode\/([a-z0-9._-]+)/i
           dependency_sections = %w[
             catalog
             catalogs
+            configDependencies
             dependencies
             devDependencies
             optionalDependencies
             overrides
+            packageExtensions
+            patchedDependencies
             peerDependencies
             resolutions
           ].freeze
@@ -222,6 +226,19 @@ jobs:
           end
 
           manifests.each { |path| visit.call(JSON.parse(File.read(path)), path, []) }
+          workspace_path = "./pnpm-workspace.yaml"
+          if File.exist?(workspace_path)
+            abort "pnpm-workspace.yaml must be a regular file" if File.symlink?(workspace_path) || !File.file?(workspace_path)
+            workspace = YAML.safe_load(File.read(workspace_path), aliases: true)
+            abort "pnpm-workspace.yaml must contain a mapping" unless workspace.is_a?(Hash)
+            workspace.each_key do |key|
+              name = key.to_s
+              if %w[namedRegistries registries registry].include?(name) || name.end_with?(":registry")
+                failures << "#{workspace_path}:#{name}"
+              end
+            end
+            visit.call(workspace, workspace_path, [])
+          end
           abort "Dependency manifest contains a disallowed package or source at #{failures.uniq.join(', ')}" unless failures.empty?
           RUBY
 
