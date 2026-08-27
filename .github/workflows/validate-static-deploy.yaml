@@ -1,0 +1,41 @@
+name: Validate shared static deploy workflow
+
+on:
+  pull_request:
+    paths:
+      - .github/tests/deploy-static-lock-validator.test.rb
+      - .github/tests/deploy-static-job-boundaries.test.rb
+      - .github/tests/discord-metadata-boundary.test.rb
+      - .github/workflows/discord-notify.yaml
+      - .github/workflows/deploy-static-website.yaml
+      - .github/workflows/validate-static-deploy.yaml
+  push:
+    branches: [main]
+    paths:
+      - .github/tests/deploy-static-lock-validator.test.rb
+      - .github/tests/deploy-static-job-boundaries.test.rb
+      - .github/tests/discord-metadata-boundary.test.rb
+      - .github/workflows/discord-notify.yaml
+      - .github/workflows/deploy-static-website.yaml
+      - .github/workflows/validate-static-deploy.yaml
+
+permissions:
+  contents: read
+
+jobs:
+  lock-validator:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+
+      - name: Test lock validator fixtures
+        run: ruby .github/tests/deploy-static-lock-validator.test.rb
+
+      - name: Test static deploy job boundaries
+        run: ruby .github/tests/deploy-static-job-boundaries.test.rb
+
+      - name: Test Discord metadata boundary
+        run: ruby .github/tests/discord-metadata-boundary.test.rb

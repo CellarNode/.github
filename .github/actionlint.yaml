@@ -1,0 +1,18 @@
+self-hosted-runner:
+  labels:
+    - self-hosted-k8s
+
+paths:
+  .github/workflows/deploy-backend.yaml:
+    ignore:
+      - 'shellcheck reported issue in this script: SC2086:.+'
+  .github/workflows/deploy-cloudrun.yaml:
+    ignore:
+      - 'shellcheck reported issue in this script: SC2086:.+'
+  .github/workflows/i18n-instrument.yaml:
+    ignore:
+      - 'shellcheck reported issue in this script: SC2086:.+'
+  .github/workflows/i18n-pipeline.yaml:
+    ignore:
+      - 'shellcheck reported issue in this script: SC2001:.+'
+      - 'shellcheck reported issue in this script: SC2086:.+'

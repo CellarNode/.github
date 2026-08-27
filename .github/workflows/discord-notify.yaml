@@ -82,6 +82,26 @@ jobs:
 
             // --- Metadata stored as a hidden PR comment ---
             const META_TAG = '<!-- discord-metadata:';
+            const discordSnowflake = /^\d{17,20}$/;
+            const allowedMetadataKeys = new Set(['threadId', 'openMessageId', 'buildMessageId']);
+
+            function parseMetadata(body) {
+              const match = body.match(/^<!-- discord-metadata:(\{.*\})-->$/s);
+              if (!match) return null;
+
+              try {
+                const metadata = JSON.parse(match[1]);
+                if (!metadata || Array.isArray(metadata) || typeof metadata !== 'object') return null;
+
+                const entries = Object.entries(metadata);
+                if (entries.some(([key, value]) => !allowedMetadataKeys.has(key) || typeof value !== 'string' || !discordSnowflake.test(value))) {
+                  return null;
+                }
+                return metadata;
+              } catch {
+                return null;
+              }
+            }
 
             async function getMetadata() {
               const pr = context.payload.pull_request;
@@ -95,12 +115,9 @@ jobs:
               });
 
               for (const c of comments) {
-                if (c.body?.includes(META_TAG)) {
-                  try {
-                    const json = c.body.split(META_TAG)[1].split('-->')[0].trim();
-                    return { commentId: c.id, ...JSON.parse(json) };
-                  } catch { /* ignore malformed */ }
-                }
+                if (c.user?.login !== 'github-actions[bot]') continue;
+                const metadata = parseMetadata(c.body ?? '');
+                if (metadata) return { ...metadata, commentId: c.id };
               }
               return {};
             }
@@ -363,11 +380,10 @@ jobs:
                     per_page: 100
                   });
                   for (const c of comments) {
-                    if (c.body?.includes(META_TAG)) {
-                      try {
-                        const json = c.body.split(META_TAG)[1].split('-->')[0].trim();
-                        threadId = JSON.parse(json).threadId;
-                      } catch {}
+                    if (c.user?.login !== 'github-actions[bot]') continue;
+                    const metadata = parseMetadata(c.body ?? '');
+                    if (metadata?.threadId) {
+                      threadId = metadata.threadId;
                       break;
                     }
                   }
