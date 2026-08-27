@@ -108,23 +108,34 @@ jobs:
           require "yaml"
 
           path = ARGV.fetch(0)
-          source = /(?:\A|@)(?:git\+|git@|ssh:\/\/|github:|gitlab:|bitbucket:|https?:\/\/|file:|link:|workspace:)/i
+          external_source = /(?:\A|@)(?:git\+|git@|ssh:\/\/|github:|gitlab:|bitbucket:|https?:\/\/|file:)/i
+          workspace_source = /\A(?:link:|workspace:)/i
+          allowed_workspace_ref = lambda do |keys|
+            keys.first == "importers" && %w[specifier version].include?(keys.last)
+          end
           failures = []
           visit = lambda do |value, keys|
             case value
             when Hash
               value.each do |key, child|
                 name = key.to_s
-                failures << (keys + [name]).join(".") if source.match?(name)
-                if keys.last == "resolution" && %w[directory tarball].include?(name)
-                  failures << (keys + [name]).join(".")
+                child_keys = keys + [name]
+                if external_source.match?(name) ||
+                   (workspace_source.match?(name) && !allowed_workspace_ref.call(child_keys))
+                  failures << child_keys.join(".")
                 end
-                visit.call(child, keys + [name])
+                if keys.last == "resolution" && %w[directory tarball].include?(name)
+                  failures << child_keys.join(".")
+                end
+                visit.call(child, child_keys)
               end
             when Array
               value.each_with_index { |child, index| visit.call(child, keys + [index.to_s]) }
             when String
-              failures << keys.join(".") if source.match?(value)
+              if external_source.match?(value) ||
+                 (workspace_source.match?(value) && !allowed_workspace_ref.call(keys))
+                failures << keys.join(".")
+              end
             end
           end
 
