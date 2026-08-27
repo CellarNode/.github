@@ -20,6 +20,10 @@ abort "Preview policy must receive actor and author as data" unless policy_step&
   "ACTOR" => "${{ github.actor }}",
   "AUTHOR" => "${{ github.event.pull_request.user.login }}",
 }
+abort "Preview policy must authenticate its current permission lookup" unless policy_step&.fetch("env", {})&.fetch("GH_TOKEN", nil) == "${{ github.token }}"
+abort "Preview policy must query current repository permission" unless policy_step&.fetch("run", "")&.include?('gh api "repos/${REPOSITORY}/collaborators/${ACTOR}/permission"')
+abort "Preview policy must require write-capable permission" unless policy_step&.fetch("run", "")&.include?("admin|maintain|write)")
+abort "Preview policy must not trust stale author association" if policy_step&.fetch("env", {})&.key?("AUTHOR_ASSOCIATION")
 
 build_preview = jobs.fetch("build-preview")
 abort "Preview build must use a GitHub-hosted runner" unless build_preview.fetch("runs-on") == "ubuntu-latest"
@@ -40,6 +44,7 @@ abort "Preview build must require the trusted policy output" unless build_previe
 end
 
 abort "Preview lifecycle must not bind an unavailable sender field" if File.read(workflow_path).include?("github.event.sender.login")
+abort "Preview lifecycle must not trust stale author association" if File.read(workflow_path).include?("author_association")
 
 build_production = jobs.fetch("build-production")
 abort "Production build must use a GitHub-hosted runner" unless build_production.fetch("runs-on") == "ubuntu-latest"

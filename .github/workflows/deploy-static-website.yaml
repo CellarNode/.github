@@ -78,9 +78,9 @@ jobs:
           EVENT_ACTION: ${{ github.event.action }}
           HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
           REPOSITORY: ${{ github.repository }}
-          AUTHOR_ASSOCIATION: ${{ github.event.pull_request.author_association }}
           ACTOR: ${{ github.actor }}
           AUTHOR: ${{ github.event.pull_request.user.login }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
@@ -89,28 +89,33 @@ jobs:
             same_repository=true
           fi
 
-          association_allowed=false
-          case "$AUTHOR_ASSOCIATION" in
-            OWNER|MEMBER) association_allowed=true ;;
-          esac
-
           actor_matches_author=false
           if [ "$ACTOR" = "$AUTHOR" ]; then
             actor_matches_author=true
+          fi
+
+          permission_allowed=false
+          if [ "$EVENT_NAME" = "pull_request" ] &&
+            [ "$same_repository" = "true" ] &&
+            [ "$actor_matches_author" = "true" ]; then
+            permission="$(gh api "repos/${REPOSITORY}/collaborators/${ACTOR}/permission" --jq .permission)"
+            case "$permission" in
+              admin|maintain|write) permission_allowed=true ;;
+            esac
           fi
 
           trusted=false
           if [ "$EVENT_NAME" = "pull_request" ] &&
             [ "$EVENT_ACTION" != "closed" ] &&
             [ "$same_repository" = "true" ] &&
-            [ "$association_allowed" = "true" ] &&
+            [ "$permission_allowed" = "true" ] &&
             [ "$actor_matches_author" = "true" ]; then
             trusted=true
           fi
 
           printf 'trusted=%s\n' "$trusted" >> "$GITHUB_OUTPUT"
-          printf 'preview policy: event=%s action=%s same_repository=%s association_allowed=%s actor_matches_author=%s trusted=%s\n' \
-            "$EVENT_NAME" "$EVENT_ACTION" "$same_repository" "$association_allowed" "$actor_matches_author" "$trusted"
+          printf 'preview policy: event=%s action=%s same_repository=%s permission_allowed=%s actor_matches_author=%s trusted=%s\n' \
+            "$EVENT_NAME" "$EVENT_ACTION" "$same_repository" "$permission_allowed" "$actor_matches_author" "$trusted"
 
   build-preview:
     needs: preview-policy
