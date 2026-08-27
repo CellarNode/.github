@@ -1,0 +1,20 @@
+.github/tests/deploy-static-job-boundaries.test.rb
+  s_e494ddb2690bdf::t_af10e7809326a0 225-228
+  s_e494ddb2690bdf::t_94c12a7a303f5f 193,198,202-203
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.0",
+  "base_commit_sha": "0a03a445ac329dcdc7b4689de59b1dbb674b4413",
+  "prompts": {},
+  "sessions": {
+    "s_e494ddb2690bdf": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0333d-6bf6-78b1-91b9-1f7413f8c7de",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "mjnong <marcusnagy@icloud.com>"
+    }
+  }
+}
