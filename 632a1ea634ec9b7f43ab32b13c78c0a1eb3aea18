@@ -1,0 +1,27 @@
+.github/workflows/deploy-backend.yaml
+  s_e494ddb2690bdf::t_051e76be4353a8 42-44,257-259,272-274,282-284,292-294
+.github/workflows/deploy-static-website.yaml
+  s_e494ddb2690bdf::t_051e76be4353a8 48-50,251-253,265-267,276-278,286-288
+.github/workflows/discord-notify.yaml
+  s_e494ddb2690bdf::t_095d467265fca4 30-33,42,50-53
+.github/workflows/deploy-cloudrun.yaml
+  s_e494ddb2690bdf::t_051e76be4353a8 25-28,153-155,167-169,176-178,186-188
+.github/workflows/i18n-pipeline.yaml
+  s_e494ddb2690bdf::t_051e76be4353a8 58-60,201-202
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.24",
+  "base_commit_sha": "632a1ea634ec9b7f43ab32b13c78c0a1eb3aea18",
+  "prompts": {},
+  "sessions": {
+    "s_e494ddb2690bdf": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0333d-6bf6-78b1-91b9-1f7413f8c7de",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "mjnong <marcusnagy@icloud.com>"
+    }
+  }
+}
