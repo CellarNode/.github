@@ -65,10 +65,10 @@ jobs:
     # CEL-1259 — serialize per consumer repo. `github.repository` in a reusable
     # workflow resolves to the *caller's* repo, so each consumer gets its own
     # queue and consumers never block each other. Without this, two overlapping
-    # runs each list predecessors before either creates its PR, so both PRs
-    # survive and the "at most one open i18n PR" invariant breaks by
-    # construction. `cancel-in-progress: false` because cancelling mid-run can
-    # leave a pushed branch with no PR attached to it.
+    # runs would each create a PR and each close step excludes only its OWN new
+    # PR — so the runs close each other's fresh PR and the repo can end up with
+    # churned or zero open i18n PRs. `cancel-in-progress: false` because
+    # cancelling mid-run can leave a pushed branch with no PR attached to it.
     concurrency:
       group: i18n-pipeline-${{ github.repository }}
       cancel-in-progress: false
@@ -256,7 +256,7 @@ jobs:
           set -u
           PREDECESSORS=$(gh api --paginate \
             -H "Accept: application/vnd.github+json" \
-            "repos/${GITHUB_REPOSITORY}/pulls?state=open&per_page=100" \
+            "repos/${GITHUB_REPOSITORY}/pulls?state=open&base=${GITHUB_REF_NAME}&per_page=100" \
             --jq '.[] | select(.head.ref | startswith("chore/i18n-pipeline-")) | "\(.number) \(.head.ref)"') || {
             echo "::warning::Failed to list predecessor i18n pipeline PRs; skipping close step."
             PREDECESSORS=""
