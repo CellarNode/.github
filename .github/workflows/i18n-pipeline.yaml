@@ -58,10 +58,26 @@ on:
       DISCORD_WEBHOOK_URL:
         description: 'Discord webhook credential'
         required: false
+      I18N_PIPELINE_TOKEN:
+        description: >-
+          Fine-grained PAT (Contents RW + Pull requests RW on the consumer
+          repos) used to author/push the i18n PR so its `on: pull_request` CI
+          fires, and to arm auto-merge (CEL-1259 steps 2-3). Optional —
+          callers on `secrets: inherit` forward it automatically once the org
+          secret exists; explicit-map callers must forward it by name. Absent,
+          the pipeline falls back to github.token (PR opens, CI parked, no
+          auto-merge).
+        required: false
 
 jobs:
   sync-translate:
     runs-on: ubuntu-latest
+    # CEL-1259 step 3 — when auto-merge lands our own "chore(i18n): sync +
+    # translate" squash on the base branch, the callers' `push` +
+    # `paths: ['src/**']` trigger would re-run this whole pipeline (bounded:
+    # the committed .polyglot-cache.json makes it a cache-hit no-diff run,
+    # but it still costs an install + Gemini pass). Skip that self-echo run.
+    if: "github.event_name != 'push' || !startsWith(github.event.head_commit.message, 'chore(i18n): sync + translate')"
     # CEL-1259 — serialize per consumer repo. `github.repository` in a reusable
     # workflow resolves to the *caller's* repo, so each consumer gets its own
     # queue and consumers never block each other. Without this, two overlapping
@@ -140,9 +156,10 @@ jobs:
       - name: Translate new/changed keys
         env:
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          FORCE_TRANSLATE: ${{ inputs.force-translate }}
         run: |
           FORCE_FLAG=""
-          if [ "${{ inputs.force-translate }}" = "true" ]; then
+          if [ "$FORCE_TRANSLATE" = "true" ]; then
             FORCE_FLAG="--force"
           fi
 
@@ -189,16 +206,26 @@ jobs:
         id: create_pr
         if: steps.diff.outputs.changed == 'true'
         env:
-          GH_TOKEN: ${{ github.token }}
+          # CEL-1259 step 2/3 — prefer the org's I18N_PIPELINE_TOKEN (fine-
+          # grained PAT forwarded via `secrets: inherit`, the CEL-361 caller
+          # contract). PRs authored (and branches pushed) with github.token
+          # never trigger `on: pull_request`, so their CI parks at
+          # action_required forever. Falls back to github.token so the
+          # pipeline keeps working (with parked CI) until the secret exists.
+          GH_TOKEN: ${{ secrets.I18N_PIPELINE_TOKEN || github.token }}
+          LOCALES_PATH: ${{ inputs.locales_path }}
         run: |
           set -euo pipefail
           BRANCH="chore/i18n-pipeline-$(date +%Y%m%d-%H%M%S)"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git checkout -b "$BRANCH"
-          git add "${{ inputs.locales_path }}/" .polyglot-cache.json src/ || true
+          git add "$LOCALES_PATH/" .polyglot-cache.json src/ || true
           git commit -m "chore(i18n): sync + translate"
-          git push origin "$BRANCH"
+          # Push with GH_TOKEN (not the checkout-persisted github.token) so the
+          # branch and the PR share the same author identity — required for the
+          # PR's `on: pull_request` CI to fire when the PAT is configured.
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$BRANCH"
           cat > "$RUNNER_TEMP/i18n-pr-body.md" <<'PR_BODY_EOF'
           Automated i18n pipeline: synced locale files, translated via Gemini, regenerated types.
 
@@ -289,6 +316,42 @@ jobs:
               sleep 1
             fi
           done
+
+      # CEL-1259 step 3/3 — flip auto-merge on the fresh PR so it lands the
+      # moment its required checks go green. Only meaningful when the PR was
+      # authored with I18N_PIPELINE_TOKEN (step 2): a github.token PR never
+      # gets CI, so auto-merge would either wait forever or — worse, on a repo
+      # with no required checks — merge translations with zero gates. The
+      # in-script guard therefore skips silently until the secret exists.
+      # `allow_auto_merge` is enabled on all three consumer repos (2026-08-27).
+      - name: Enable auto-merge on the new PR
+        if: success() && steps.diff.outputs.changed == 'true' && steps.create_pr.outputs.pr_number != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.I18N_PIPELINE_TOKEN }}
+          NEW_PR_NUMBER: ${{ steps.create_pr.outputs.pr_number }}
+        run: |
+          set -u
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "I18N_PIPELINE_TOKEN not configured — skipping auto-merge (CEL-1259 step 2 pending)."
+            exit 0
+          fi
+          # Refuse to arm auto-merge unless the base branch has required
+          # status checks. With none, GitHub either rejects the mutation (the
+          # PR is immediately mergeable) or — in the brief window while
+          # mergeability is still UNKNOWN — merges instantly with zero gates,
+          # and that push triggers the consumers' production deploy workflows.
+          RULES=$(gh api "repos/${GITHUB_REPOSITORY}/rules/branches/${GITHUB_REF_NAME}" \
+            --jq '[.[] | select(.type == "required_status_checks")] | length' 2>/dev/null || echo 0)
+          CLASSIC=$(gh api "repos/${GITHUB_REPOSITORY}/branches/${GITHUB_REF_NAME}/protection/required_status_checks" \
+            --jq '.checks | length' 2>/dev/null || echo 0)
+          if [ "${RULES:-0}" = "0" ] && [ "${CLASSIC:-0}" = "0" ]; then
+            echo "::warning::${GITHUB_REF_NAME} has no required status checks — refusing to arm auto-merge (it would merge ungated and deploy). Add branch protection or a ruleset requiring CI, then auto-merge activates on the next run."
+            exit 0
+          fi
+          if ! gh pr merge "$NEW_PR_NUMBER" --auto --squash; then
+            echo "::warning::Could not enable auto-merge on PR #$NEW_PR_NUMBER — merge it manually."
+          fi
 
   # CEL-384 prong 2: alert on workflow failure so the next silent-failure
   # incident becomes a 15-minute discovery instead of 7-20 days (CEL-361 /
