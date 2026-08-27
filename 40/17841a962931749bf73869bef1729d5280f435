@@ -1,0 +1,22 @@
+.github/workflows/deploy-static-website.yaml
+  s_e494ddb2690bdf::t_667280961643ae 167,173,178-179,229-241
+.github/tests/deploy-static-lock-validator.test.rb
+  s_e494ddb2690bdf::t_528a59910f9e91 181-207,260,282
+  s_e494ddb2690bdf::t_d0b762afd4fd55 208-256
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.24",
+  "base_commit_sha": "4017841a962931749bf73869bef1729d5280f435",
+  "prompts": {},
+  "sessions": {
+    "s_e494ddb2690bdf": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0333d-6bf6-78b1-91b9-1f7413f8c7de",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "mjnong <marcusnagy@icloud.com>"
+    }
+  }
+}
