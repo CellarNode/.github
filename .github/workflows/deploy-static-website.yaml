@@ -149,6 +149,58 @@ jobs:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
           NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/cellarnode-preview-npmrc
         run: |
+          validate_manifests() {
+            ruby <<'RUBY'
+          require "find"
+          require "json"
+
+          private_package = /@cellarnode\/([a-z0-9._-]+)/i
+          allowed_private_packages = %w[
+            auth
+            beverage-utils
+            elabel-compliance
+            finance
+            i18n
+            ui
+          ].freeze
+          failures = []
+          manifests = []
+          Find.find(".") do |path|
+            if File.directory?(path)
+              Find.prune if %w[./.git ./node_modules].include?(path)
+              next
+            end
+            next unless File.basename(path) == "package.json"
+
+            abort "Preview dependency manifest must be a regular file: #{path}" if File.symlink?(path) || !File.file?(path)
+            manifests << path
+          end
+          abort "Root package.json must be a regular file" unless manifests.include?("./package.json")
+
+          visit = lambda do |value, path, keys|
+            case value
+            when Hash
+              value.each do |key, child|
+                child_keys = keys + [key.to_s]
+                key.to_s.scan(private_package).flatten.each do |package|
+                  failures << "#{path}:#{child_keys.join('.')}" unless allowed_private_packages.include?(package.downcase)
+                end
+                visit.call(child, path, child_keys)
+              end
+            when Array
+              value.each_with_index { |child, index| visit.call(child, path, keys + [index.to_s]) }
+            when String
+              value.scan(private_package).flatten.each do |package|
+                failures << "#{path}:#{keys.join('.')}" unless allowed_private_packages.include?(package.downcase)
+              end
+            end
+          end
+
+          manifests.each { |path| visit.call(JSON.parse(File.read(path)), path, []) }
+          abort "Preview dependency manifest contains a disallowed private package at #{failures.uniq.join(', ')}" unless failures.empty?
+          RUBY
+          }
+
           validate_lock() {
             ruby - "$1" <<'RUBY'
           require "yaml"
@@ -213,6 +265,7 @@ jobs:
           RUBY
           }
 
+          validate_manifests
           if [ -z "$NPM_TOKEN" ]; then
             echo "NPM_TOKEN is required to fetch private @cellarnode packages" >&2
             exit 1

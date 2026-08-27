@@ -1,6 +1,8 @@
 require "open3"
 require "rbconfig"
 require "tempfile"
+require "tmpdir"
+require "yaml"
 
 workflow = File.read(File.expand_path("../workflows/deploy-static-website.yaml", __dir__))
 match = workflow.match(/ruby - "\$1" <<'RUBY'\n(?<body>.*?)^\s+RUBY$/m)
@@ -141,4 +143,81 @@ fixtures.each do |name, (lock, expected)|
   end
 end
 
-puts "Lock validator fixtures passed: #{fixtures.length}"
+parsed_workflow = YAML.safe_load(workflow, aliases: true)
+install_step = parsed_workflow
+  .fetch("jobs")
+  .fetch("build-preview")
+  .fetch("steps")
+  .find { |step| step["name"] == "Install dependencies with scoped registry credential" }
+abort "Credentialed install step not found" unless install_step
+
+non_frozen_script = install_step.fetch("run").sub(
+  "${{ inputs.frozen_lockfile && '--frozen-lockfile' || '--no-frozen-lockfile' }}",
+  "--no-frozen-lockfile",
+)
+
+manifest_fixtures = {
+  "unknown private manifest package" => ["@cellarnode/internal-secrets", "1.0.0", false],
+  "aliased unknown private manifest package" => ["hidden-package", "npm:@cellarnode/internal-secrets@1.0.0", false],
+  "allowed private manifest package" => ["@cellarnode/ui", "1.0.0", true],
+}
+
+manifest_fixtures.each do |name, (package, version, expected_install)|
+  Dir.mktmpdir("cel1328-manifest-boundary") do |directory|
+    File.write(
+      File.join(directory, "package.json"),
+      <<~JSON,
+        {
+          "dependencies": {
+            "#{package}": "#{version}"
+          }
+        }
+      JSON
+    )
+    File.write(
+      File.join(directory, "pnpm-lock.yaml"),
+      <<~YAML,
+        lockfileVersion: '9.0'
+        packages:
+          '@scope/package@1.0.0':
+            resolution:
+              integrity: sha512-safe
+      YAML
+    )
+
+    bin_directory = File.join(directory, "bin")
+    Dir.mkdir(bin_directory)
+    marker = File.join(directory, "pnpm-invoked")
+    pnpm = File.join(bin_directory, "pnpm")
+    File.write(pnpm, <<~SH)
+      #!/bin/sh
+      : > "$PNPM_MARKER"
+    SH
+    File.chmod(0o755, pnpm)
+
+    _stdout, stderr, status = Open3.capture3(
+      {
+        "NPM_CONFIG_USERCONFIG" => File.join(directory, "preview-npmrc"),
+        "NPM_TOKEN" => "test-token",
+        "PATH" => "#{bin_directory}:#{ENV.fetch("PATH")}",
+        "PNPM_MARKER" => marker,
+      },
+      "bash",
+      "-euo",
+      "pipefail",
+      "-c",
+      non_frozen_script,
+      chdir: directory,
+    )
+
+    if expected_install
+      abort "#{name}: install did not run successfully: #{stderr}" unless status.success? && File.exist?(marker)
+    else
+      abort "#{name}: install unexpectedly succeeded" if status.success?
+      abort "#{name}: package manager ran before manifest rejection" if File.exist?(marker)
+      abort "#{name}: wrong rejection: #{stderr}" unless stderr.include?("manifest contains a disallowed private package")
+    end
+  end
+end
+
+puts "Lock validator fixtures passed: #{fixtures.length}; manifest fixtures passed: #{manifest_fixtures.length}"
