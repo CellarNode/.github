@@ -54,6 +54,10 @@ on:
         description: "Discord webhook credential"
         required: false
 
+concurrency:
+  group: static-deploy-${{ inputs.website_slug }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 env:
   PROJECT_ID: festive-terrain-478011-h0
   GCS_BUCKET: websites-deploy
@@ -65,19 +69,15 @@ jobs:
   # lifecycle code. The store crosses into the tokenless build through an
   # artifact and the GitHub-hosted runners are isolated per job.
   preview-dependencies:
-    if: github.event_name == 'pull_request_target' && github.event.action != 'closed'
+    if: >-
+      github.event_name == 'pull_request_target' &&
+      github.event.action != 'closed' &&
+      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:
       contents: read
 
     steps:
-      - name: Checkout pull-request dependency lock
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          repository: ${{ github.event.pull_request.head.repo.full_name }}
-          ref: ${{ github.event.pull_request.head.sha }}
-          persist-credentials: false
-
       - name: Set up pnpm
         uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa
         with:
@@ -89,13 +89,42 @@ jobs:
         with:
           node-version: ${{ inputs.node_version }}
 
+      - name: Checkout pull-request dependency lock
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
       - name: Reject executable dependency sources
         shell: bash
         run: |
-          if grep -En ":[[:space:]]*[\"']?(git\\+|github:|gitlab:|bitbucket:|https?://|file:|link:)" pnpm-lock.yaml; then
-            echo "Preview dependency lock contains a non-registry source" >&2
-            exit 1
-          fi
+          ruby <<'RUBY'
+          require "yaml"
+
+          source = /(?:\A|@)(?:git\+|git@|ssh:\/\/|github:|gitlab:|bitbucket:|https?:\/\/|file:|link:|workspace:)/i
+          failures = []
+          visit = lambda do |value, path|
+            case value
+            when Hash
+              value.each do |key, child|
+                name = key.to_s
+                failures << (path + [name]).join(".") if source.match?(name)
+                if path.last == "resolution" && %w[directory tarball].include?(name)
+                  failures << (path + [name]).join(".")
+                end
+                visit.call(child, path + [name])
+              end
+            when Array
+              value.each_with_index { |child, index| visit.call(child, path + [index.to_s]) }
+            when String
+              failures << path.join(".") if source.match?(value)
+            end
+          end
+
+          visit.call(YAML.safe_load(File.read("pnpm-lock.yaml"), aliases: true), [])
+          abort "Preview dependency lock contains a non-registry source at #{failures.uniq.join(', ')}" unless failures.empty?
+          RUBY
 
       - name: Fetch dependencies without lifecycle execution
         shell: bash
@@ -112,19 +141,25 @@ jobs:
             '@cellarnode:registry=https://registry.npmjs.org/' \
             "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" \
             > "$TRUSTED_HOME/.npmrc"
-          HOME="$TRUSTED_HOME" pnpm fetch --frozen-lockfile --ignore-scripts --ignore-pnpmfile --store-dir "$PNPM_STORE_PATH"
+          HOME="$TRUSTED_HOME" pnpm fetch ${{ inputs.frozen_lockfile && '--frozen-lockfile' || '--no-frozen-lockfile' }} --ignore-scripts --ignore-pnpmfile --store-dir "$PNPM_STORE_PATH"
+          cp pnpm-lock.yaml "$RUNNER_TEMP/resolved-pnpm-lock.yaml"
 
       - name: Upload dependency store
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: preview-dependencies-${{ inputs.website_slug }}
-          path: ${{ runner.temp }}/pnpm-store
+          path: |
+            ${{ runner.temp }}/pnpm-store
+            ${{ runner.temp }}/resolved-pnpm-lock.yaml
           if-no-files-found: error
           retention-days: 1
 
   build-preview:
     needs: preview-dependencies
-    if: github.event_name == 'pull_request_target' && github.event.action != 'closed'
+    if: >-
+      github.event_name == 'pull_request_target' &&
+      github.event.action != 'closed' &&
+      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -152,15 +187,16 @@ jobs:
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: preview-dependencies-${{ inputs.website_slug }}
-          path: ${{ runner.temp }}/pnpm-store
+          path: ${{ runner.temp }}/preview-dependencies
 
       - name: Install dependencies offline
         shell: bash
         env:
-          PNPM_STORE_PATH: ${{ runner.temp }}/pnpm-store
+          PNPM_STORE_PATH: ${{ runner.temp }}/preview-dependencies/pnpm-store
         run: |
           rm -f -- .npmrc .pnpmfile.cjs
-          pnpm install --offline --frozen-lockfile --ignore-scripts --ignore-pnpmfile --store-dir "$PNPM_STORE_PATH"
+          cp "$RUNNER_TEMP/preview-dependencies/resolved-pnpm-lock.yaml" pnpm-lock.yaml
+          pnpm install --offline ${{ inputs.frozen_lockfile && '--frozen-lockfile' || '--no-frozen-lockfile' }} --ignore-scripts --ignore-pnpmfile --store-dir "$PNPM_STORE_PATH"
 
       - name: Rebuild dependencies
         run: pnpm rebuild
@@ -268,10 +304,14 @@ jobs:
 
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f
+        env:
+          CLOUDSDK_CONFIG: ${{ runner.temp }}/gcloud
         with:
           skip_install: true
 
       - name: Warm gcloud credential cache
+        env:
+          CLOUDSDK_CONFIG: ${{ runner.temp }}/gcloud
         run: |
           for i in 1 2 3 4 5; do
             gcloud storage ls "gs://${GCS_BUCKET}" > /dev/null && exit 0
@@ -283,6 +323,7 @@ jobs:
 
       - name: Deploy to production
         env:
+          CLOUDSDK_CONFIG: ${{ runner.temp }}/gcloud
           WEBSITE: ${{ inputs.website }}
         run: |
           gcloud storage rsync --recursive --checksums-only --delete-unmatched-destination-objects \
@@ -327,10 +368,14 @@ jobs:
 
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f
+        env:
+          CLOUDSDK_CONFIG: ${{ runner.temp }}/gcloud
         with:
           skip_install: true
 
       - name: Warm gcloud credential cache
+        env:
+          CLOUDSDK_CONFIG: ${{ runner.temp }}/gcloud
         run: |
           for i in 1 2 3 4 5; do
             gcloud storage ls "gs://${GCS_BUCKET}" > /dev/null && exit 0
@@ -342,6 +387,7 @@ jobs:
 
       - name: Deploy preview
         env:
+          CLOUDSDK_CONFIG: ${{ runner.temp }}/gcloud
           WEBSITE_SLUG: ${{ inputs.website_slug }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
@@ -387,7 +433,10 @@ jobs:
             }
 
   cleanup:
-    if: github.event_name == 'pull_request_target' && github.event.action == 'closed'
+    if: >-
+      github.event_name == 'pull_request_target' &&
+      github.event.action == 'closed' &&
+      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: self-hosted-k8s
     container:
       image: europe-north1-docker.pkg.dev/festive-terrain-478011-h0/beveriq/ci-runner@sha256:e57fadf58eb4e125a101f366a9cd97cb022e3cb8a9eae6028cefdfb0003b2960
@@ -405,18 +454,24 @@ jobs:
 
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f
+        env:
+          CLOUDSDK_CONFIG: ${{ runner.temp }}/gcloud
         with:
           skip_install: true
 
       - name: Delete preview
         env:
+          CLOUDSDK_CONFIG: ${{ runner.temp }}/gcloud
           WEBSITE_SLUG: ${{ inputs.website_slug }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           gcloud storage rm --recursive "gs://${GCS_BUCKET}/preview/${WEBSITE_SLUG}/pr${PR_NUMBER}" || true
 
   discord-thread-open:
-    if: github.event_name == 'pull_request_target' && github.event.action == 'opened'
+    if: >-
+      github.event_name == 'pull_request_target' &&
+      github.event.action == 'opened' &&
+      github.event.pull_request.head.repo.full_name == github.repository
     permissions:
       pull-requests: write
     uses: ./.github/workflows/discord-notify.yaml
@@ -432,6 +487,7 @@ jobs:
       always() &&
       github.event_name == 'pull_request_target' &&
       github.event.action != 'closed' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
       needs.preview-dependencies.result != 'cancelled'
     permissions:
       pull-requests: write
@@ -444,7 +500,10 @@ jobs:
       preview_url: ${{ needs.deploy-preview.result == 'success' && format('https://{0}-pr{1}.dev.cellarnode.com', inputs.website_slug, github.event.pull_request.number) || '' }}
 
   discord-thread-close:
-    if: github.event_name == 'pull_request_target' && github.event.action == 'closed'
+    if: >-
+      github.event_name == 'pull_request_target' &&
+      github.event.action == 'closed' &&
+      github.event.pull_request.head.repo.full_name == github.repository
     permissions:
       pull-requests: write
     uses: ./.github/workflows/discord-notify.yaml
