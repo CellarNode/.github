@@ -257,7 +257,7 @@ jobs:
           PREDECESSORS=$(gh api --paginate \
             -H "Accept: application/vnd.github+json" \
             "repos/${GITHUB_REPOSITORY}/pulls?state=open&base=${GITHUB_REF_NAME}&per_page=100" \
-            --jq '.[] | select(.head.ref | startswith("chore/i18n-pipeline-")) | "\(.number) \(.head.ref)"') || {
+            --jq '.[] | select((.head.ref | startswith("chore/i18n-pipeline-")) and .head.repo.full_name == env.GITHUB_REPOSITORY) | "\(.number) \(.head.ref)"') || {
             echo "::warning::Failed to list predecessor i18n pipeline PRs; skipping close step."
             PREDECESSORS=""
           }
