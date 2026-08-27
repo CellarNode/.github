@@ -1,0 +1,21 @@
+.github/workflows/discord-notify.yaml
+  s_e494ddb2690bdf::t_677c2848d0bc5d 383-386
+.github/tests/discord-metadata-boundary.test.rb
+  s_e494ddb2690bdf::t_b2628c59bda339 10-15
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.24",
+  "base_commit_sha": "fb2de9c32fce60679a4780eac6922df67ff5c7c6",
+  "prompts": {},
+  "sessions": {
+    "s_e494ddb2690bdf": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0333d-6bf6-78b1-91b9-1f7413f8c7de",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "mjnong <marcusnagy@icloud.com>"
+    }
+  }
+}
