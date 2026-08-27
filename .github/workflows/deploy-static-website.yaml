@@ -180,7 +180,7 @@ jobs:
             peerDependencies
             resolutions
           ].freeze
-          non_registry_dependency_source = /\A(?:npm:|git\+|git@|git:\/\/|ssh:\/\/|github:|gitlab:|bitbucket:|https?:\/\/|file:|link:|workspace:|patch:|portal:|catalog:)|[\\\/]|\.(?:tgz|tar\.gz)\z/i
+          non_registry_dependency_source = /\A(?:npm:|git\+|git@|git:\/\/|ssh:\/\/|github:|gitlab:|bitbucket:|https?:\/\/|file:|link:|workspace:|patch:|portal:|catalog:)|[\\\/]|\.(?:tgz|tar(?:\.gz)?)\z/i
           allowed_private_packages = %w[
             auth
             beverage-utils
@@ -246,9 +246,11 @@ jobs:
           require "yaml"
 
           path = ARGV.fetch(0)
-          external_source = /(?:\A|@)(?:git\+|git@|git:\/\/|ssh:\/\/|github:|gitlab:|bitbucket:|https?:\/\/|file:)/i
-          workspace_source = /\A(?:link:|workspace:)/i
+          non_registry_protocol = /(?:\A|@)(?!npm:)[a-z][a-z0-9+.-]*:/i
+          relative_archive_source = /\A(?:\.\.?[\\\/]|~[\\\/]|[\\\/])|\.(?:tgz|tar(?:\.gz)?)\z/i
+          repository_shorthand = /\A[a-z0-9._-]+(?:[\\\/][a-z0-9._-]+)+(?:#.*)?\z/i
           private_package = /@cellarnode\/([a-z0-9._-]+)/i
+          dependency_sections = %w[dependencies devDependencies optionalDependencies peerDependencies].freeze
           allowed_private_packages = %w[
             auth
             beverage-utils
@@ -257,9 +259,6 @@ jobs:
             i18n
             ui
           ].freeze
-          allowed_workspace_ref = lambda do |keys|
-            keys.first == "importers" && %w[specifier version].include?(keys.last)
-          end
           failures = []
           validate_private_packages = lambda do |text, keys|
             text.to_s.scan(private_package).flatten.each do |package|
@@ -280,8 +279,7 @@ jobs:
                     child["integrity"].match?(/\Asha(?:1|256|384|512)-[A-Za-z0-9+\/]+={0,2}\z/)
                   failures << child_keys.join(".") unless valid_resolution
                 end
-                if external_source.match?(name) ||
-                   (workspace_source.match?(name) && !allowed_workspace_ref.call(child_keys))
+                if non_registry_protocol.match?(name) || relative_archive_source.match?(name)
                   failures << child_keys.join(".")
                 end
                 if keys.last == "resolution" && name != "integrity"
@@ -293,8 +291,9 @@ jobs:
               value.each_with_index { |child, index| visit.call(child, keys + [index.to_s]) }
             when String
               validate_private_packages.call(value, keys)
-              if external_source.match?(value) ||
-                 (workspace_source.match?(value) && !allowed_workspace_ref.call(keys))
+              if non_registry_protocol.match?(value) ||
+                 relative_archive_source.match?(value) ||
+                 (keys.any? { |key| dependency_sections.include?(key) } && repository_shorthand.match?(value))
                 failures << keys.join(".")
               end
             end

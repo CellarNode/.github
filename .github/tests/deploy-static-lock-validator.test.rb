@@ -53,7 +53,7 @@ fixtures = {
         resolution:
           integrity: sha999-safe
   YAML
-  "workspace importer reference" => [<<~YAML, true],
+  "workspace importer reference" => [<<~YAML, false],
     lockfileVersion: '9.0'
     importers:
       .:
@@ -61,6 +61,60 @@ fixtures = {
           local-package:
             specifier: workspace:*
             version: link:../local-package
+  YAML
+  "patch importer locator" => [<<~YAML, false],
+    lockfileVersion: '9.0'
+    importers:
+      .:
+        dependencies:
+          external-package:
+            specifier: 1.0.0
+            version: patch:dep@npm%3A1.0.0#hash
+  YAML
+  "portal importer locator" => [<<~YAML, false],
+    lockfileVersion: '9.0'
+    importers:
+      .:
+        dependencies:
+          external-package:
+            specifier: 1.0.0
+            version: portal:../evil
+  YAML
+  "relative tarball importer locator" => [<<~YAML, false],
+    lockfileVersion: '9.0'
+    importers:
+      .:
+        dependencies:
+          external-package:
+            specifier: 1.0.0
+            version: ../evil.tgz
+  YAML
+  "unknown protocol importer locator" => [<<~YAML, false],
+    lockfileVersion: '9.0'
+    importers:
+      .:
+        dependencies:
+          external-package:
+            specifier: 1.0.0
+            version: exec:payload
+  YAML
+  "repository shorthand importer locator" => [<<~YAML, false],
+    lockfileVersion: '9.0'
+    importers:
+      .:
+        dependencies:
+          external-package:
+            specifier: 1.0.0
+            version: attacker/package
+  YAML
+  "npm registry alias importer locator" => [<<~YAML, true],
+    lockfileVersion: '9.0'
+    importers:
+      .:
+        dependencies:
+          aliased-package:
+            specifier: npm:public-package@1.0.0
+            version: public-package@1.0.0
   YAML
   "raw git protocol" => [<<~YAML, false],
     lockfileVersion: '9.0'
@@ -178,6 +232,7 @@ manifest_fixtures = {
   "workspace manifest package" => ["public-package", "workspace:*", false],
   "github shorthand manifest package" => ["public-package", "attacker/package", false],
   "tarball manifest package" => ["public-package", "package.tgz", false],
+  "tar archive manifest package" => ["public-package", "package.tar", false],
   "git workspace override" => [
     "public-package",
     "^1.0.0",
