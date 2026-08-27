@@ -77,7 +77,7 @@ jobs:
     # `paths: ['src/**']` trigger would re-run this whole pipeline (bounded:
     # the committed .polyglot-cache.json makes it a cache-hit no-diff run,
     # but it still costs an install + Gemini pass). Skip that self-echo run.
-    if: github.event_name != 'push' || !startsWith(github.event.head_commit.message, 'chore(i18n): sync + translate')
+    if: "github.event_name != 'push' || !startsWith(github.event.head_commit.message, 'chore(i18n): sync + translate')"
     # CEL-1259 — serialize per consumer repo. `github.repository` in a reusable
     # workflow resolves to the *caller's* repo, so each consumer gets its own
     # queue and consumers never block each other. Without this, two overlapping
@@ -156,9 +156,10 @@ jobs:
       - name: Translate new/changed keys
         env:
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          FORCE_TRANSLATE: ${{ inputs.force-translate }}
         run: |
           FORCE_FLAG=""
-          if [ "${{ inputs.force-translate }}" = "true" ]; then
+          if [ "$FORCE_TRANSLATE" = "true" ]; then
             FORCE_FLAG="--force"
           fi
 
@@ -212,13 +213,14 @@ jobs:
           # action_required forever. Falls back to github.token so the
           # pipeline keeps working (with parked CI) until the secret exists.
           GH_TOKEN: ${{ secrets.I18N_PIPELINE_TOKEN || github.token }}
+          LOCALES_PATH: ${{ inputs.locales_path }}
         run: |
           set -euo pipefail
           BRANCH="chore/i18n-pipeline-$(date +%Y%m%d-%H%M%S)"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git checkout -b "$BRANCH"
-          git add "${{ inputs.locales_path }}/" .polyglot-cache.json src/ || true
+          git add "$LOCALES_PATH/" .polyglot-cache.json src/ || true
           git commit -m "chore(i18n): sync + translate"
           # Push with GH_TOKEN (not the checkout-persisted github.token) so the
           # branch and the PR share the same author identity — required for the
