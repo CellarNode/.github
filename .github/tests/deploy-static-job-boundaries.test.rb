@@ -20,7 +20,8 @@ untrusted_preview_names = ["Verify credential isolation", "Rebuild dependencies"
 untrusted_preview_steps = build_preview.fetch("steps").select { |step| untrusted_preview_names.include?(step.fetch("name", "")) }
 abort "Preview rebuild/check/build steps must explicitly clear NPM_TOKEN" unless untrusted_preview_steps.length == 5 && untrusted_preview_steps.all? { |step| step.fetch("env", {}).fetch("NPM_TOKEN", nil) == "" }
 preview_guard = build_preview.fetch("if")
-abort "Preview build must bind the synchronizing actor to the member author" unless preview_guard.include?("github.event.sender.login == github.event.pull_request.user.login")
+abort "Preview build must bind the workflow actor to the member author" unless preview_guard.include?("github.actor == github.event.pull_request.user.login")
+abort "Preview build must not bind an unavailable sender field" if preview_guard.include?("github.event.sender.login")
 
 build_production = jobs.fetch("build-production")
 abort "Production build must use a GitHub-hosted runner" unless build_production.fetch("runs-on") == "ubuntu-latest"

@@ -69,7 +69,7 @@ jobs:
       github.event.action != 'closed' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       contains(fromJSON('["OWNER","MEMBER"]'), github.event.pull_request.author_association) &&
-      github.event.sender.login == github.event.pull_request.user.login
+      github.actor == github.event.pull_request.user.login
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -369,7 +369,7 @@ jobs:
       github.event.action != 'closed' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       contains(fromJSON('["OWNER","MEMBER"]'), github.event.pull_request.author_association) &&
-      github.event.sender.login == github.event.pull_request.user.login
+      github.actor == github.event.pull_request.user.login
     runs-on: self-hosted-k8s
     container:
       image: europe-north1-docker.pkg.dev/festive-terrain-478011-h0/beveriq/ci-runner@sha256:e57fadf58eb4e125a101f366a9cd97cb022e3cb8a9eae6028cefdfb0003b2960
@@ -515,7 +515,7 @@ jobs:
       github.event.action == 'opened' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       contains(fromJSON('["OWNER","MEMBER"]'), github.event.pull_request.author_association) &&
-      github.event.sender.login == github.event.pull_request.user.login
+      github.actor == github.event.pull_request.user.login
     permissions:
       pull-requests: write
     uses: ./.github/workflows/discord-notify.yaml
@@ -533,7 +533,7 @@ jobs:
       github.event.action != 'closed' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       contains(fromJSON('["OWNER","MEMBER"]'), github.event.pull_request.author_association) &&
-      github.event.sender.login == github.event.pull_request.user.login &&
+      github.actor == github.event.pull_request.user.login &&
       needs.build-preview.result != 'cancelled'
     permissions:
       pull-requests: write
