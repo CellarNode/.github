@@ -1,4 +1,6 @@
 require "yaml"
+require "open3"
+require "tmpdir"
 
 workflow_path = File.expand_path("../workflows/deploy-static-website.yaml", __dir__)
 workflow = YAML.safe_load(File.read(workflow_path), aliases: true)
@@ -36,6 +38,26 @@ untrusted_preview_steps = build_preview.fetch("steps").select { |step| untrusted
 abort "Preview rebuild/check/build steps must explicitly clear NPM_TOKEN" unless untrusted_preview_steps.length == 5 && untrusted_preview_steps.all? { |step| step.fetch("env", {}).fetch("NPM_TOKEN", nil) == "" }
 abort "Preview build must depend on the trusted policy" unless Array(build_preview.fetch("needs")).include?("preview-policy")
 abort "Preview build must require the trusted policy output" unless build_preview.fetch("if") == "needs.preview-policy.outputs.trusted == 'true'"
+
+%w[build-preview build-production].each do |job_name|
+  steps = jobs.fetch(job_name).fetch("steps")
+  validation_index = steps.index { |step| step.fetch("name", "") == "Reject non-regular build outputs" }
+  upload_index = steps.index { |step| step.fetch("name", "") == "Upload static site artifact" }
+  abort "#{job_name} must validate build outputs before upload" unless validation_index && upload_index && validation_index < upload_index
+
+  validation = steps.fetch(validation_index).fetch("run")
+  Dir.mktmpdir do |directory|
+    dist = File.join(directory, "dist")
+    Dir.mkdir(dist)
+    File.write(File.join(dist, "index.html"), "safe")
+    _stdout, stderr, status = Open3.capture3("bash", "-euo", "pipefail", "-c", validation, chdir: directory)
+    abort "#{job_name} must accept regular build outputs: #{stderr}" unless status.success?
+
+    File.symlink("/proc/self/environ", File.join(dist, "environment.txt"))
+    _stdout, _stderr, status = Open3.capture3("bash", "-euo", "pipefail", "-c", validation, chdir: directory)
+    abort "#{job_name} must reject symlinks before upload" if status.success?
+  end
+end
 
 %w[deploy-preview discord-thread-open discord-build-update].each do |job_name|
   job = jobs.fetch(job_name)

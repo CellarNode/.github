@@ -156,16 +156,31 @@ jobs:
           path = ARGV.fetch(0)
           external_source = /(?:\A|@)(?:git\+|git@|git:\/\/|ssh:\/\/|github:|gitlab:|bitbucket:|https?:\/\/|file:)/i
           workspace_source = /\A(?:link:|workspace:)/i
+          private_package = /@cellarnode\/([a-z0-9._-]+)/i
+          allowed_private_packages = %w[
+            auth
+            beverage-utils
+            elabel-compliance
+            finance
+            i18n
+            ui
+          ].freeze
           allowed_workspace_ref = lambda do |keys|
             keys.first == "importers" && %w[specifier version].include?(keys.last)
           end
           failures = []
+          validate_private_packages = lambda do |text, keys|
+            text.to_s.scan(private_package).flatten.each do |package|
+              failures << keys.join(".") unless allowed_private_packages.include?(package.downcase)
+            end
+          end
           visit = lambda do |value, keys|
             case value
             when Hash
               value.each do |key, child|
                 name = key.to_s
                 child_keys = keys + [name]
+                validate_private_packages.call(name, child_keys)
                 if name == "resolution"
                   valid_resolution = child.is_a?(Hash) &&
                     child.keys.map(&:to_s) == ["integrity"] &&
@@ -185,6 +200,7 @@ jobs:
             when Array
               value.each_with_index { |child, index| visit.call(child, keys + [index.to_s]) }
             when String
+              validate_private_packages.call(value, keys)
               if external_source.match?(value) ||
                  (workspace_source.match?(value) && !allowed_workspace_ref.call(keys))
                 failures << keys.join(".")
@@ -193,7 +209,7 @@ jobs:
           end
 
           visit.call(YAML.safe_load(File.read(path), aliases: true), [])
-          abort "Preview dependency lock contains a non-registry source at #{failures.uniq.join(', ')}" unless failures.empty?
+          abort "Preview dependency lock contains a disallowed source or private package at #{failures.uniq.join(', ')}" unless failures.empty?
           RUBY
           }
 
@@ -255,6 +271,15 @@ jobs:
             done <<< "$BUILD_ENV_VARS"
           fi
           pnpm build
+
+      - name: Reject non-regular build outputs
+        shell: bash
+        run: |
+          test -d dist
+          if find dist \( -type l -o -type b -o -type c -o -type p -o -type s \) -print -quit | grep -q .; then
+            echo "Static artifact contains a non-regular entry" >&2
+            exit 1
+          fi
 
       - name: Upload static site artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -343,6 +368,15 @@ jobs:
             done <<< "$BUILD_ENV_VARS"
           fi
           pnpm build
+
+      - name: Reject non-regular build outputs
+        shell: bash
+        run: |
+          test -d dist
+          if find dist \( -type l -o -type b -o -type c -o -type p -o -type s \) -print -quit | grep -q .; then
+            echo "Static artifact contains a non-regular entry" >&2
+            exit 1
+          fi
 
       - name: Upload static site artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

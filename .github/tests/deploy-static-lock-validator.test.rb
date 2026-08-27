@@ -97,6 +97,33 @@ fixtures = {
         resolution:
           directory: ../external-package
   YAML
+  "allowed private package" => [<<~YAML, true],
+    lockfileVersion: '9.0'
+    packages:
+      '@cellarnode/ui@0.154.0':
+        resolution:
+          integrity: sha512-safe
+  YAML
+  "unknown private package" => [<<~YAML, false],
+    lockfileVersion: '9.0'
+    packages:
+      '@cellarnode/internal-secrets@1.0.0':
+        resolution:
+          integrity: sha512-safe
+  YAML
+  "aliased unknown private package" => [<<~YAML, false],
+    lockfileVersion: '9.0'
+    importers:
+      .:
+        dependencies:
+          hidden-package:
+            specifier: npm:@cellarnode/internal-secrets@1.0.0
+            version: '@cellarnode/internal-secrets@1.0.0'
+    packages:
+      '@cellarnode/internal-secrets@1.0.0':
+        resolution:
+          integrity: sha512-safe
+  YAML
 }
 
 fixtures.each do |name, (lock, expected)|
