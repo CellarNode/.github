@@ -56,7 +56,7 @@ on:
 
 concurrency:
   group: static-deploy-${{ inputs.website_slug }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request_target' && github.event.action != 'closed' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && github.event.action != 'closed' }}
 
 env:
   PROJECT_ID: festive-terrain-478011-h0
@@ -65,7 +65,7 @@ env:
 jobs:
   build-preview:
     if: >-
-      github.event_name == 'pull_request_target' &&
+      github.event_name == 'pull_request' &&
       github.event.action != 'closed' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       contains(fromJSON('["OWNER","MEMBER"]'), github.event.pull_request.author_association) &&
@@ -93,8 +93,11 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
 
-      - name: Validate and install dependencies without credentials
+      - name: Install dependencies with scoped registry credential
         shell: bash
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/cellarnode-preview-npmrc
         run: |
           validate_lock() {
             ruby - "$1" <<'RUBY'
@@ -144,7 +147,17 @@ jobs:
           RUBY
           }
 
-          rm -f -- .npmrc .pnpmfile.cjs
+          if [ -z "$NPM_TOKEN" ]; then
+            echo "NPM_TOKEN is required to fetch private @cellarnode packages" >&2
+            exit 1
+          fi
+          rm -f -- .npmrc .pnpmfile.cjs "$NPM_CONFIG_USERCONFIG"
+          trap 'rm -f "$NPM_CONFIG_USERCONFIG"' EXIT
+          umask 077
+          printf '%s\n' \
+            '@cellarnode:registry=https://registry.npmjs.org/' \
+            "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" \
+            > "$NPM_CONFIG_USERCONFIG"
           if [ ! -f pnpm-lock.yaml ] || [ -L pnpm-lock.yaml ]; then
             echo "pnpm-lock.yaml must be a regular file" >&2
             exit 1
@@ -153,21 +166,38 @@ jobs:
           pnpm install ${{ inputs.frozen_lockfile && '--frozen-lockfile' || '--no-frozen-lockfile' }} --ignore-scripts --ignore-pnpmfile
           validate_lock pnpm-lock.yaml
 
+      - name: Verify credential isolation
+        env:
+          NPM_TOKEN: ""
+          NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/cellarnode-preview-npmrc
+        run: |
+          test -z "$NPM_TOKEN"
+          test ! -e "$NPM_CONFIG_USERCONFIG"
+          test ! -e .npmrc
+          test ! -e .pnpmfile.cjs
+
       - name: Rebuild dependencies
+        env:
+          NPM_TOKEN: ""
         run: pnpm rebuild
 
       - name: Type check
         if: inputs.typecheck
+        env:
+          NPM_TOKEN: ""
         run: pnpm tsc --noEmit
 
       - name: Lint
         if: inputs.lint
+        env:
+          NPM_TOKEN: ""
         run: pnpm lint
 
       - name: Build preview
         shell: bash
         env:
           BUILD_ENV_VARS: ${{ inputs.build_env }}
+          NPM_TOKEN: ""
         run: |
           if [ -n "$BUILD_ENV_VARS" ]; then
             while IFS= read -r line; do
@@ -206,26 +236,56 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install dependencies
+      - name: Install dependencies with scoped registry credential
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: pnpm install ${{ inputs.frozen_lockfile && '--frozen-lockfile' || '--no-frozen-lockfile' }} --ignore-scripts
+          NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/cellarnode-production-npmrc
+        run: |
+          if [ -z "$NPM_TOKEN" ]; then
+            echo "NPM_TOKEN is required to fetch private @cellarnode packages" >&2
+            exit 1
+          fi
+          rm -f -- .npmrc .pnpmfile.cjs "$NPM_CONFIG_USERCONFIG"
+          trap 'rm -f "$NPM_CONFIG_USERCONFIG"' EXIT
+          umask 077
+          printf '%s\n' \
+            '@cellarnode:registry=https://registry.npmjs.org/' \
+            "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" \
+            > "$NPM_CONFIG_USERCONFIG"
+          pnpm install ${{ inputs.frozen_lockfile && '--frozen-lockfile' || '--no-frozen-lockfile' }} --ignore-scripts --ignore-pnpmfile
+
+      - name: Verify credential isolation
+        env:
+          NPM_TOKEN: ""
+          NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/cellarnode-production-npmrc
+        run: |
+          test -z "$NPM_TOKEN"
+          test ! -e "$NPM_CONFIG_USERCONFIG"
+          test ! -e .npmrc
+          test ! -e .pnpmfile.cjs
 
       - name: Rebuild dependencies
+        env:
+          NPM_TOKEN: ""
         run: pnpm rebuild
 
       - name: Type check
         if: inputs.typecheck
+        env:
+          NPM_TOKEN: ""
         run: pnpm tsc --noEmit
 
       - name: Lint
         if: inputs.lint
+        env:
+          NPM_TOKEN: ""
         run: pnpm lint
 
       - name: Build production
         shell: bash
         env:
           BUILD_ENV_VARS: ${{ inputs.build_env }}
+          NPM_TOKEN: ""
         run: |
           if [ -n "$BUILD_ENV_VARS" ]; then
             while IFS= read -r line; do
@@ -305,7 +365,7 @@ jobs:
   deploy-preview:
     needs: build-preview
     if: >-
-      github.event_name == 'pull_request_target' &&
+      github.event_name == 'pull_request' &&
       github.event.action != 'closed' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       contains(fromJSON('["OWNER","MEMBER"]'), github.event.pull_request.author_association) &&
@@ -412,7 +472,7 @@ jobs:
 
   cleanup:
     if: >-
-      github.event_name == 'pull_request_target' &&
+      github.event_name == 'pull_request' &&
       github.event.action == 'closed' &&
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: self-hosted-k8s
@@ -451,7 +511,7 @@ jobs:
 
   discord-thread-open:
     if: >-
-      github.event_name == 'pull_request_target' &&
+      github.event_name == 'pull_request' &&
       github.event.action == 'opened' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       contains(fromJSON('["OWNER","MEMBER"]'), github.event.pull_request.author_association) &&
@@ -469,7 +529,7 @@ jobs:
     needs: [build-preview, deploy-preview, discord-thread-open]
     if: >-
       always() &&
-      github.event_name == 'pull_request_target' &&
+      github.event_name == 'pull_request' &&
       github.event.action != 'closed' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       contains(fromJSON('["OWNER","MEMBER"]'), github.event.pull_request.author_association) &&
@@ -487,7 +547,7 @@ jobs:
 
   discord-thread-close:
     if: >-
-      github.event_name == 'pull_request_target' &&
+      github.event_name == 'pull_request' &&
       github.event.action == 'closed' &&
       github.event.pull_request.head.repo.full_name == github.repository
     permissions:

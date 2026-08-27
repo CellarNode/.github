@@ -5,7 +5,7 @@ workflow = YAML.safe_load(File.read(workflow_path), aliases: true)
 jobs = workflow.fetch("jobs")
 
 cancel_in_progress = workflow.fetch("concurrency").fetch("cancel-in-progress")
-expected_cancel_policy = "${{ github.event_name == 'pull_request_target' && github.event.action != 'closed' }}"
+expected_cancel_policy = "${{ github.event_name == 'pull_request' && github.event.action != 'closed' }}"
 abort "Production deploys must never be cancelled in progress" unless cancel_in_progress == expected_cancel_policy
 
 abort "Preview dependencies must not cross jobs through a package-store artifact" if jobs.key?("preview-dependencies")
@@ -13,7 +13,12 @@ abort "Preview dependencies must not cross jobs through a package-store artifact
 build_preview = jobs.fetch("build-preview")
 abort "Preview build must use a GitHub-hosted runner" unless build_preview.fetch("runs-on") == "ubuntu-latest"
 abort "Preview build must not use a self-hosted container" if build_preview.key?("container")
-abort "Preview build must not receive NPM_TOKEN" if build_preview.fetch("steps").any? { |step| step.fetch("env", {}).key?("NPM_TOKEN") }
+abort "Preview build must not receive NPM_TOKEN at job scope" if build_preview.fetch("env", {}).key?("NPM_TOKEN")
+preview_install = build_preview.fetch("steps").find { |step| step.fetch("name", "") == "Install dependencies with scoped registry credential" }
+abort "Preview install must receive only the scoped NPM_TOKEN" unless preview_install&.fetch("env", {})&.fetch("NPM_TOKEN", nil) == "${{ secrets.NPM_TOKEN }}"
+untrusted_preview_names = ["Verify credential isolation", "Rebuild dependencies", "Type check", "Lint", "Build preview"]
+untrusted_preview_steps = build_preview.fetch("steps").select { |step| untrusted_preview_names.include?(step.fetch("name", "")) }
+abort "Preview rebuild/check/build steps must explicitly clear NPM_TOKEN" unless untrusted_preview_steps.length == 5 && untrusted_preview_steps.all? { |step| step.fetch("env", {}).fetch("NPM_TOKEN", nil) == "" }
 preview_guard = build_preview.fetch("if")
 abort "Preview build must bind the synchronizing actor to the member author" unless preview_guard.include?("github.event.sender.login == github.event.pull_request.user.login")
 
