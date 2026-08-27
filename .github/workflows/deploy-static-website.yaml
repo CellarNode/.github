@@ -441,6 +441,8 @@ jobs:
       - name: Deploy to production
         env:
           CLOUDSDK_CONFIG: ${{ runner.temp }}/gcloud
+          CLOUDSDK_STORAGE_PROCESS_COUNT: '1'
+          CLOUDSDK_STORAGE_THREAD_COUNT: '1'
           WEBSITE: ${{ inputs.website }}
         run: |
           gcloud storage rsync --recursive --checksums-only --delete-unmatched-destination-objects \
@@ -502,6 +504,8 @@ jobs:
       - name: Deploy preview
         env:
           CLOUDSDK_CONFIG: ${{ runner.temp }}/gcloud
+          CLOUDSDK_STORAGE_PROCESS_COUNT: '1'
+          CLOUDSDK_STORAGE_THREAD_COUNT: '1'
           WEBSITE_SLUG: ${{ inputs.website_slug }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |

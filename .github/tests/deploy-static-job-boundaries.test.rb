@@ -78,6 +78,22 @@ abort "Production deploy must use the self-hosted runner" unless deploy_producti
 deploy_steps = deploy_production.fetch("steps")
 abort "Production deploy must not check out source" if deploy_steps.any? { |step| step.fetch("uses", "").start_with?("actions/checkout@") }
 
+{
+  "deploy-production" => "Deploy to production",
+  "deploy-preview" => "Deploy preview",
+}.each do |job_name, step_name|
+  deploy_step = jobs.fetch(job_name).fetch("steps").find { |step| step.fetch("name", "") == step_name }
+  storage_parallelism = deploy_step&.fetch("env", {})&.slice(
+    "CLOUDSDK_STORAGE_PROCESS_COUNT",
+    "CLOUDSDK_STORAGE_THREAD_COUNT",
+  )
+  expected_serial_execution = {
+    "CLOUDSDK_STORAGE_PROCESS_COUNT" => "1",
+    "CLOUDSDK_STORAGE_THREAD_COUNT" => "1",
+  }
+  abort "#{step_name} must serialize gcloud storage workers" unless storage_parallelism == expected_serial_execution
+end
+
 cleanup_guard = jobs.fetch("cleanup").fetch("if")
 abort "Preview cleanup must survive author offboarding" if cleanup_guard.include?("author_association")
 
