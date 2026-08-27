@@ -108,7 +108,7 @@ jobs:
           require "yaml"
 
           path = ARGV.fetch(0)
-          external_source = /(?:\A|@)(?:git\+|git@|ssh:\/\/|github:|gitlab:|bitbucket:|https?:\/\/|file:)/i
+          external_source = /(?:\A|@)(?:git\+|git@|git:\/\/|ssh:\/\/|github:|gitlab:|bitbucket:|https?:\/\/|file:)/i
           workspace_source = /\A(?:link:|workspace:)/i
           allowed_workspace_ref = lambda do |keys|
             keys.first == "importers" && %w[specifier version].include?(keys.last)
@@ -120,11 +120,14 @@ jobs:
               value.each do |key, child|
                 name = key.to_s
                 child_keys = keys + [name]
+                if name == "resolution" && !child.is_a?(Hash)
+                  failures << child_keys.join(".")
+                end
                 if external_source.match?(name) ||
                    (workspace_source.match?(name) && !allowed_workspace_ref.call(child_keys))
                   failures << child_keys.join(".")
                 end
-                if keys.last == "resolution" && %w[directory tarball].include?(name)
+                if keys.last == "resolution" && name != "integrity"
                   failures << child_keys.join(".")
                 end
                 visit.call(child, child_keys)
