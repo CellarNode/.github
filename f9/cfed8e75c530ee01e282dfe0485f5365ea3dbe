@@ -1,0 +1,20 @@
+.github/workflows/deploy-static-website.yaml
+  s_e494ddb2690bdf::t_62d9b90a116382 107-115
+  s_e494ddb2690bdf::t_6f80c3d5fc8ddf 39-43,51-52,62-106,116-197,205-233,235-243,246,256-289,292,294,296,306-363,366,368-387,390,399-416,419,430,433,435,443,447,458,468
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.24",
+  "base_commit_sha": "f9cfed8e75c530ee01e282dfe0485f5365ea3dbe",
+  "prompts": {},
+  "sessions": {
+    "s_e494ddb2690bdf": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0333d-6bf6-78b1-91b9-1f7413f8c7de",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "mjnong <marcusnagy@icloud.com>"
+    }
+  }
+}
