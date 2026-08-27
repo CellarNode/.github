@@ -166,6 +166,17 @@ jobs:
           require "json"
 
           private_package = /@cellarnode\/([a-z0-9._-]+)/i
+          dependency_sections = %w[
+            catalog
+            catalogs
+            dependencies
+            devDependencies
+            optionalDependencies
+            overrides
+            peerDependencies
+            resolutions
+          ].freeze
+          non_registry_dependency_source = /\A(?:npm:|git\+|git@|git:\/\/|ssh:\/\/|github:|gitlab:|bitbucket:|https?:\/\/|file:|link:|workspace:|patch:|portal:|catalog:)|[\\\/]|\.(?:tgz|tar\.gz)\z/i
           allowed_private_packages = %w[
             auth
             beverage-utils
@@ -204,11 +215,14 @@ jobs:
               value.scan(private_package).flatten.each do |package|
                 failures << "#{path}:#{keys.join('.')}" unless allowed_private_packages.include?(package.downcase)
               end
+              if keys.any? { |key| dependency_sections.include?(key) } && non_registry_dependency_source.match?(value)
+                failures << "#{path}:#{keys.join('.')}"
+              end
             end
           end
 
           manifests.each { |path| visit.call(JSON.parse(File.read(path)), path, []) }
-          abort "Dependency manifest contains a disallowed private package at #{failures.uniq.join(', ')}" unless failures.empty?
+          abort "Dependency manifest contains a disallowed package or source at #{failures.uniq.join(', ')}" unless failures.empty?
           RUBY
 
           cat > "$LOCK_VALIDATOR" <<'RUBY'

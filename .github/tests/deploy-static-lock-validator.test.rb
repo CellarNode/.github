@@ -171,6 +171,13 @@ manifest_fixtures = {
   "unknown private manifest package" => ["@cellarnode/internal-secrets", "1.0.0", false],
   "aliased unknown private manifest package" => ["hidden-package", "npm:@cellarnode/internal-secrets@1.0.0", false],
   "allowed private manifest package" => ["@cellarnode/ui", "1.0.0", true],
+  "allowed public registry range" => ["public-package", "^1.0.0", true],
+  "aliased public manifest package" => ["@cellarnode/ui", "npm:evil-package@1.0.0", false],
+  "git manifest package" => ["public-package", "git+https://evil.example/package.git", false],
+  "file manifest package" => ["public-package", "file:../package", false],
+  "workspace manifest package" => ["public-package", "workspace:*", false],
+  "github shorthand manifest package" => ["public-package", "attacker/package", false],
+  "tarball manifest package" => ["public-package", "package.tgz", false],
 }
 
 dependency_scripts.each do |job_name, (validation_script, non_frozen_script)|
@@ -228,7 +235,7 @@ dependency_scripts.each do |job_name, (validation_script, non_frozen_script)|
       else
         abort "#{job_name} #{name}: credential-free validation unexpectedly succeeded" if validation_status.success?
         abort "#{job_name} #{name}: package manager ran before manifest rejection" if File.exist?(marker)
-        abort "#{job_name} #{name}: wrong rejection: #{validation_stderr}" unless validation_stderr.include?("manifest contains a disallowed private package")
+        abort "#{job_name} #{name}: wrong rejection: #{validation_stderr}" unless validation_stderr.include?("manifest contains a disallowed package or source")
         next
       end
 
