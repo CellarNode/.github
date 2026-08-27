@@ -113,7 +113,7 @@ jobs:
       run: |
         if [ -n "$BUILD_ENV_VARS" ]; then
           while IFS= read -r line; do
-            [ -n "$line" ] && export "$line"
+            [ -n "$line" ] && export "${line?}"
           done <<< "$BUILD_ENV_VARS"
         fi
         pnpm build
