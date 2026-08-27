@@ -1,0 +1,23 @@
+.github/tests/deploy-static-job-boundaries.test.rb
+  s_e494ddb2690bdf::t_2583c627d49fc5 196-239
+  s_e494ddb2690bdf::t_1b3b0812aeb0d6 180-181,184-195,240-248
+  s_e494ddb2690bdf::t_c22c9a86e1f1b9 249
+.github/workflows/deploy-static-website.yaml
+  s_e494ddb2690bdf::t_25540f038a4da3 734,737-764,782-783
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.0",
+  "base_commit_sha": "ccf499a9e6f2c492e83e252e07cc865ffd2a70b5",
+  "prompts": {},
+  "sessions": {
+    "s_e494ddb2690bdf": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0333d-6bf6-78b1-91b9-1f7413f8c7de",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "mjnong <marcusnagy@icloud.com>"
+    }
+  }
+}
