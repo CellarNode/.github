@@ -1,0 +1,19 @@
+.github/workflows/deploy-static-website.yaml
+  s_e494ddb2690bdf::t_dc381c5914da9e 311-312,327-328,340-341,352
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.24",
+  "base_commit_sha": "b7b39c837186b8304c592540e8491e8f20ee40da",
+  "prompts": {},
+  "sessions": {
+    "s_e494ddb2690bdf": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0333d-6bf6-78b1-91b9-1f7413f8c7de",
+        "model": "gpt-5.6-luna"
+      },
+      "human_author": "mjnong <marcusnagy@icloud.com>"
+    }
+  }
+}
