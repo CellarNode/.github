@@ -731,8 +731,37 @@ jobs:
     permissions:
       contents: read
       id-token: write
+      pull-requests: read
 
     steps:
+      - name: Revalidate cleanup authorization
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b
+        env:
+          ACTOR: ${{ github.actor }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPOSITORY: ${{ github.repository }}
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const actor = process.env.ACTOR;
+            const prNumber = Number(process.env.PR_NUMBER);
+            const repository = process.env.REPOSITORY;
+            const { data: pullRequest } = await github.rest.pulls.get({
+              ...context.repo,
+              pull_number: prNumber,
+            });
+            const { data: access } = await github.rest.repos.getCollaboratorPermissionLevel({
+              ...context.repo,
+              username: actor,
+            });
+            const authorized = pullRequest.state === 'closed' &&
+              pullRequest.user?.login === actor &&
+              pullRequest.head.repo?.full_name === repository &&
+              ['admin', 'maintain', 'write'].includes(access.permission);
+            if (!authorized) {
+              core.setFailed('Cleanup authorization is no longer valid');
+            }
+
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
         with:
@@ -750,6 +779,8 @@ jobs:
       - name: Delete preview
         env:
           CLOUDSDK_CONFIG: ${{ runner.temp }}/gcloud
+          CLOUDSDK_STORAGE_PROCESS_COUNT: '1'
+          CLOUDSDK_STORAGE_THREAD_COUNT: '1'
           WEBSITE_SLUG: ${{ inputs.website_slug }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |

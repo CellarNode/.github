@@ -177,8 +177,75 @@ abort "Production deploy must not check out source" if deploy_steps.any? { |step
   abort "#{step_name} must serialize gcloud storage workers" unless storage_parallelism == expected_serial_execution
 end
 
-cleanup_guard = jobs.fetch("cleanup").fetch("if")
+cleanup = jobs.fetch("cleanup")
+cleanup_guard = cleanup.fetch("if")
 abort "Preview cleanup must survive author offboarding" if cleanup_guard.include?("author_association")
+
+cleanup_steps = cleanup.fetch("steps")
+cleanup_authorization_index = cleanup_steps.index { |step| step.fetch("name", "") == "Revalidate cleanup authorization" }
+cleanup_oidc_index = cleanup_steps.index { |step| step.fetch("name", "") == "Authenticate to Google Cloud" }
+abort "Cleanup authorization must be revalidated immediately before OIDC" unless cleanup_authorization_index && cleanup_authorization_index + 1 == cleanup_oidc_index
+cleanup_authorization = cleanup_steps.fetch(cleanup_authorization_index)
+abort "Cleanup authorization recheck must use pinned GitHub Script" unless cleanup_authorization.fetch("uses", "").match?(/\Aactions\/github-script@[0-9a-f]{40}\z/)
+abort "Cleanup authorization recheck must use the job token" unless cleanup_authorization.fetch("with", {}).fetch("github-token", nil) == "${{ github.token }}"
+cleanup_script = cleanup_authorization.fetch("with").fetch("script")
+abort "Cleanup authorization must require a closed pull request" unless cleanup_script.include?("pullRequest.state === 'closed'")
+abort "Cleanup authorization must require actor ownership" unless cleanup_script.include?("pullRequest.user?.login === actor")
+abort "Cleanup authorization must require current write permission" unless cleanup_script.include?("['admin', 'maintain', 'write'].includes(access.permission)")
+
+cleanup_base_pull_request = {
+  "state" => "closed",
+  "user" => { "login" => "maintainer" },
+  "head" => { "repo" => { "full_name" => "CellarNode/site" } },
+}
+cleanup_cases = {
+  "current trusted author" => [cleanup_base_pull_request, "write", true],
+  "open pull request" => [cleanup_base_pull_request.merge("state" => "open"), "write", false],
+  "forked head" => [cleanup_base_pull_request.merge("head" => { "repo" => { "full_name" => "attacker/site" } }), "write", false],
+  "different author" => [cleanup_base_pull_request.merge("user" => { "login" => "other-user" }), "write", false],
+  "revoked permission" => [cleanup_base_pull_request, "read", false],
+}
+cleanup_cases.each do |name, (pull_request, permission, expected)|
+  _stdout, _stderr, status = Open3.capture3(
+    {
+      "ACTOR" => "maintainer",
+      "AUTHORIZATION_SCRIPT" => cleanup_script,
+      "CURRENT_PERMISSION" => permission,
+      "PR_JSON" => JSON.generate(pull_request),
+      "PR_NUMBER" => "42",
+      "REPOSITORY" => "CellarNode/site",
+    },
+    "node", "-e", <<~'JAVASCRIPT',
+      const AsyncFunction = Object.getPrototypeOf(async () => null).constructor;
+      const pullRequest = JSON.parse(process.env.PR_JSON);
+      const github = {
+        rest: {
+          pulls: { get: async () => ({ data: pullRequest }) },
+          repos: {
+            getCollaboratorPermissionLevel: async () => ({
+              data: { permission: process.env.CURRENT_PERMISSION },
+            }),
+          },
+        },
+      };
+      const context = { repo: { owner: 'CellarNode', repo: 'site' } };
+      const core = { setFailed: message => { throw new Error(message); } };
+      new AsyncFunction('github', 'context', 'core', process.env.AUTHORIZATION_SCRIPT)(github, context, core)
+        .catch(error => { console.error(error.message); process.exitCode = 1; });
+    JAVASCRIPT
+  )
+  abort "cleanup #{name}: expected accepted=#{expected}, got accepted=#{status.success?}" unless status.success? == expected
+end
+
+delete_preview = cleanup_steps.find { |step| step.fetch("name", "") == "Delete preview" }
+cleanup_parallelism = delete_preview&.fetch("env", {})&.slice(
+  "CLOUDSDK_STORAGE_PROCESS_COUNT",
+  "CLOUDSDK_STORAGE_THREAD_COUNT",
+)
+abort "Preview cleanup must serialize gcloud storage workers" unless cleanup_parallelism == {
+  "CLOUDSDK_STORAGE_PROCESS_COUNT" => "1",
+  "CLOUDSDK_STORAGE_THREAD_COUNT" => "1",
+}
 
 validation_path = File.expand_path("../workflows/validate-static-deploy.yaml", __dir__)
 validation = YAML.safe_load(File.read(validation_path), aliases: true)
