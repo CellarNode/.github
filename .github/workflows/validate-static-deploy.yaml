@@ -4,12 +4,14 @@ on:
   pull_request:
     paths:
       - .github/tests/deploy-static-lock-validator.test.rb
+      - .github/tests/deploy-static-job-boundaries.test.rb
       - .github/workflows/deploy-static-website.yaml
       - .github/workflows/validate-static-deploy.yaml
   push:
     branches: [main]
     paths:
       - .github/tests/deploy-static-lock-validator.test.rb
+      - .github/tests/deploy-static-job-boundaries.test.rb
       - .github/workflows/deploy-static-website.yaml
       - .github/workflows/validate-static-deploy.yaml
 
@@ -25,3 +27,6 @@ jobs:
 
       - name: Test lock validator fixtures
         run: ruby .github/tests/deploy-static-lock-validator.test.rb
+
+      - name: Test static deploy job boundaries
+        run: ruby .github/tests/deploy-static-job-boundaries.test.rb

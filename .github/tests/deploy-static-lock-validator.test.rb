@@ -15,6 +15,42 @@ fixtures = {
         resolution:
           integrity: sha512-safe
   YAML
+  "empty resolution" => [<<~YAML, false],
+    lockfileVersion: '9.0'
+    packages:
+      '@scope/package@1.0.0':
+        resolution: {}
+  YAML
+  "missing integrity value" => [<<~YAML, false],
+    lockfileVersion: '9.0'
+    packages:
+      '@scope/package@1.0.0':
+        resolution:
+          integrity:
+  YAML
+  "structured integrity value" => [<<~YAML, false],
+    lockfileVersion: '9.0'
+    packages:
+      '@scope/package@1.0.0':
+        resolution:
+          integrity:
+            digest: sha512-safe
+  YAML
+  "array integrity value" => [<<~YAML, false],
+    lockfileVersion: '9.0'
+    packages:
+      '@scope/package@1.0.0':
+        resolution:
+          integrity:
+            - sha512-safe
+  YAML
+  "unknown integrity algorithm" => [<<~YAML, false],
+    lockfileVersion: '9.0'
+    packages:
+      '@scope/package@1.0.0':
+        resolution:
+          integrity: sha999-safe
+  YAML
   "workspace importer reference" => [<<~YAML, true],
     lockfileVersion: '9.0'
     importers:
@@ -46,6 +82,20 @@ fixtures = {
       external-package@1.0.0:
         resolution:
           path: external-package
+  YAML
+  "tarball resolution" => [<<~YAML, false],
+    lockfileVersion: '9.0'
+    packages:
+      external-package@1.0.0:
+        resolution:
+          tarball: https://evil.example/package.tgz
+  YAML
+  "directory resolution" => [<<~YAML, false],
+    lockfileVersion: '9.0'
+    packages:
+      external-package@1.0.0:
+        resolution:
+          directory: ../external-package
   YAML
 }
 

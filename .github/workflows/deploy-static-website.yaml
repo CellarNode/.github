@@ -120,8 +120,12 @@ jobs:
               value.each do |key, child|
                 name = key.to_s
                 child_keys = keys + [name]
-                if name == "resolution" && !child.is_a?(Hash)
-                  failures << child_keys.join(".")
+                if name == "resolution"
+                  valid_resolution = child.is_a?(Hash) &&
+                    child.keys.map(&:to_s) == ["integrity"] &&
+                    child["integrity"].is_a?(String) &&
+                    child["integrity"].match?(/\Asha(?:1|256|384|512)-[A-Za-z0-9+\/]+={0,2}\z/)
+                  failures << child_keys.join(".") unless valid_resolution
                 end
                 if external_source.match?(name) ||
                    (workspace_source.match?(name) && !allowed_workspace_ref.call(child_keys))
@@ -256,13 +260,22 @@ jobs:
 
   build-production:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: self-hosted-k8s
-    container:
-      image: europe-north1-docker.pkg.dev/festive-terrain-478011-h0/beveriq/ci-runner@sha256:e57fadf58eb4e125a101f366a9cd97cb022e3cb8a9eae6028cefdfb0003b2960
+    runs-on: ubuntu-latest
     permissions:
       contents: read
 
     steps:
+      - name: Set up pnpm
+        uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa
+        with:
+          version: ${{ inputs.pnpm_version }}
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: ${{ inputs.node_version }}
+
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
