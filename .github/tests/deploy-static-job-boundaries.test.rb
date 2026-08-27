@@ -10,6 +10,17 @@ abort "Production deploys must never be cancelled in progress" unless cancel_in_
 
 abort "Preview dependencies must not cross jobs through a package-store artifact" if jobs.key?("preview-dependencies")
 
+preview_policy = jobs.fetch("preview-policy")
+abort "Preview policy must use a GitHub-hosted runner" unless preview_policy.fetch("runs-on") == "ubuntu-latest"
+abort "Preview policy must not receive secrets" unless preview_policy.fetch("permissions") == { "contents" => "read" }
+abort "Preview policy must expose a trusted output" unless preview_policy.fetch("outputs", {}).fetch("trusted", nil) == "${{ steps.policy.outputs.trusted }}"
+policy_step = preview_policy.fetch("steps").find { |step| step.fetch("id", "") == "policy" }
+abort "Preview policy must compare actor and author inside the trusted shell" unless policy_step&.fetch("run", "")&.include?('[ "$ACTOR" = "$AUTHOR" ]')
+abort "Preview policy must receive actor and author as data" unless policy_step&.fetch("env", {})&.slice("ACTOR", "AUTHOR") == {
+  "ACTOR" => "${{ github.actor }}",
+  "AUTHOR" => "${{ github.event.pull_request.user.login }}",
+}
+
 build_preview = jobs.fetch("build-preview")
 abort "Preview build must use a GitHub-hosted runner" unless build_preview.fetch("runs-on") == "ubuntu-latest"
 abort "Preview build must not use a self-hosted container" if build_preview.key?("container")
@@ -19,9 +30,16 @@ abort "Preview install must receive only the scoped NPM_TOKEN" unless preview_in
 untrusted_preview_names = ["Verify credential isolation", "Rebuild dependencies", "Type check", "Lint", "Build preview"]
 untrusted_preview_steps = build_preview.fetch("steps").select { |step| untrusted_preview_names.include?(step.fetch("name", "")) }
 abort "Preview rebuild/check/build steps must explicitly clear NPM_TOKEN" unless untrusted_preview_steps.length == 5 && untrusted_preview_steps.all? { |step| step.fetch("env", {}).fetch("NPM_TOKEN", nil) == "" }
-preview_guard = build_preview.fetch("if")
-abort "Preview build must bind the workflow actor to the member author" unless preview_guard.include?("github.actor == github.event.pull_request.user.login")
-abort "Preview build must not bind an unavailable sender field" if preview_guard.include?("github.event.sender.login")
+abort "Preview build must depend on the trusted policy" unless Array(build_preview.fetch("needs")).include?("preview-policy")
+abort "Preview build must require the trusted policy output" unless build_preview.fetch("if") == "needs.preview-policy.outputs.trusted == 'true'"
+
+%w[deploy-preview discord-thread-open discord-build-update].each do |job_name|
+  job = jobs.fetch(job_name)
+  abort "#{job_name} must depend on the trusted policy" unless Array(job.fetch("needs")).include?("preview-policy")
+  abort "#{job_name} must require the trusted policy output" unless job.fetch("if").include?("needs.preview-policy.outputs.trusted == 'true'")
+end
+
+abort "Preview lifecycle must not bind an unavailable sender field" if File.read(workflow_path).include?("github.event.sender.login")
 
 build_production = jobs.fetch("build-production")
 abort "Production build must use a GitHub-hosted runner" unless build_production.fetch("runs-on") == "ubuntu-latest"

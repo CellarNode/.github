@@ -63,13 +63,58 @@ env:
   GCS_BUCKET: websites-deploy
 
 jobs:
+  preview-policy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      trusted: ${{ steps.policy.outputs.trusted }}
+    steps:
+      - name: Evaluate preview trust boundary
+        id: policy
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_ACTION: ${{ github.event.action }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          REPOSITORY: ${{ github.repository }}
+          AUTHOR_ASSOCIATION: ${{ github.event.pull_request.author_association }}
+          ACTOR: ${{ github.actor }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          set -euo pipefail
+
+          same_repository=false
+          if [ "$HEAD_REPOSITORY" = "$REPOSITORY" ]; then
+            same_repository=true
+          fi
+
+          association_allowed=false
+          case "$AUTHOR_ASSOCIATION" in
+            OWNER|MEMBER) association_allowed=true ;;
+          esac
+
+          actor_matches_author=false
+          if [ "$ACTOR" = "$AUTHOR" ]; then
+            actor_matches_author=true
+          fi
+
+          trusted=false
+          if [ "$EVENT_NAME" = "pull_request" ] &&
+            [ "$EVENT_ACTION" != "closed" ] &&
+            [ "$same_repository" = "true" ] &&
+            [ "$association_allowed" = "true" ] &&
+            [ "$actor_matches_author" = "true" ]; then
+            trusted=true
+          fi
+
+          printf 'trusted=%s\n' "$trusted" >> "$GITHUB_OUTPUT"
+          printf 'preview policy: event=%s action=%s same_repository=%s association_allowed=%s actor_matches_author=%s trusted=%s\n' \
+            "$EVENT_NAME" "$EVENT_ACTION" "$same_repository" "$association_allowed" "$actor_matches_author" "$trusted"
+
   build-preview:
-    if: >-
-      github.event_name == 'pull_request' &&
-      github.event.action != 'closed' &&
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      contains(fromJSON('["OWNER","MEMBER"]'), github.event.pull_request.author_association) &&
-      github.actor == github.event.pull_request.user.login
+    needs: preview-policy
+    if: needs.preview-policy.outputs.trusted == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -363,13 +408,8 @@ jobs:
             ./dist "gs://${GCS_BUCKET}/${WEBSITE}"
 
   deploy-preview:
-    needs: build-preview
-    if: >-
-      github.event_name == 'pull_request' &&
-      github.event.action != 'closed' &&
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      contains(fromJSON('["OWNER","MEMBER"]'), github.event.pull_request.author_association) &&
-      github.actor == github.event.pull_request.user.login
+    needs: [preview-policy, build-preview]
+    if: needs.preview-policy.outputs.trusted == 'true'
     runs-on: self-hosted-k8s
     container:
       image: europe-north1-docker.pkg.dev/festive-terrain-478011-h0/beveriq/ci-runner@sha256:e57fadf58eb4e125a101f366a9cd97cb022e3cb8a9eae6028cefdfb0003b2960
@@ -510,12 +550,10 @@ jobs:
           fi
 
   discord-thread-open:
+    needs: preview-policy
     if: >-
-      github.event_name == 'pull_request' &&
-      github.event.action == 'opened' &&
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      contains(fromJSON('["OWNER","MEMBER"]'), github.event.pull_request.author_association) &&
-      github.actor == github.event.pull_request.user.login
+      needs.preview-policy.outputs.trusted == 'true' &&
+      github.event.action == 'opened'
     permissions:
       pull-requests: write
     uses: ./.github/workflows/discord-notify.yaml
@@ -526,14 +564,10 @@ jobs:
       tags: ${{ inputs.discord_tags }}
 
   discord-build-update:
-    needs: [build-preview, deploy-preview, discord-thread-open]
+    needs: [preview-policy, build-preview, deploy-preview, discord-thread-open]
     if: >-
       always() &&
-      github.event_name == 'pull_request' &&
-      github.event.action != 'closed' &&
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      contains(fromJSON('["OWNER","MEMBER"]'), github.event.pull_request.author_association) &&
-      github.actor == github.event.pull_request.user.login &&
+      needs.preview-policy.outputs.trusted == 'true' &&
       needs.build-preview.result != 'cancelled'
     permissions:
       pull-requests: write
