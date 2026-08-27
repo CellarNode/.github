@@ -58,10 +58,26 @@ on:
       DISCORD_WEBHOOK_URL:
         description: 'Discord webhook credential'
         required: false
+      I18N_PIPELINE_TOKEN:
+        description: >-
+          Fine-grained PAT (Contents RW + Pull requests RW on the consumer
+          repos) used to author/push the i18n PR so its `on: pull_request` CI
+          fires, and to arm auto-merge (CEL-1259 steps 2-3). Optional —
+          callers on `secrets: inherit` forward it automatically once the org
+          secret exists; explicit-map callers must forward it by name. Absent,
+          the pipeline falls back to github.token (PR opens, CI parked, no
+          auto-merge).
+        required: false
 
 jobs:
   sync-translate:
     runs-on: ubuntu-latest
+    # CEL-1259 step 3 — when auto-merge lands our own "chore(i18n): sync +
+    # translate" squash on the base branch, the callers' `push` +
+    # `paths: ['src/**']` trigger would re-run this whole pipeline (bounded:
+    # the committed .polyglot-cache.json makes it a cache-hit no-diff run,
+    # but it still costs an install + Gemini pass). Skip that self-echo run.
+    if: github.event_name != 'push' || !startsWith(github.event.head_commit.message, 'chore(i18n): sync + translate')
     # CEL-1259 — serialize per consumer repo. `github.repository` in a reusable
     # workflow resolves to the *caller's* repo, so each consumer gets its own
     # queue and consumers never block each other. Without this, two overlapping
@@ -316,6 +332,19 @@ jobs:
           set -u
           if [ -z "${GH_TOKEN:-}" ]; then
             echo "I18N_PIPELINE_TOKEN not configured — skipping auto-merge (CEL-1259 step 2 pending)."
+            exit 0
+          fi
+          # Refuse to arm auto-merge unless the base branch has required
+          # status checks. With none, GitHub either rejects the mutation (the
+          # PR is immediately mergeable) or — in the brief window while
+          # mergeability is still UNKNOWN — merges instantly with zero gates,
+          # and that push triggers the consumers' production deploy workflows.
+          RULES=$(gh api "repos/${GITHUB_REPOSITORY}/rules/branches/${GITHUB_REF_NAME}" \
+            --jq '[.[] | select(.type == "required_status_checks")] | length' 2>/dev/null || echo 0)
+          CLASSIC=$(gh api "repos/${GITHUB_REPOSITORY}/branches/${GITHUB_REF_NAME}/protection/required_status_checks" \
+            --jq '.checks | length' 2>/dev/null || echo 0)
+          if [ "${RULES:-0}" = "0" ] && [ "${CLASSIC:-0}" = "0" ]; then
+            echo "::warning::${GITHUB_REF_NAME} has no required status checks — refusing to arm auto-merge (it would merge ungated and deploy). Add branch protection or a ruleset requiring CI, then auto-merge activates on the next run."
             exit 0
           fi
           if ! gh pr merge "$NEW_PR_NUMBER" --auto --squash; then
