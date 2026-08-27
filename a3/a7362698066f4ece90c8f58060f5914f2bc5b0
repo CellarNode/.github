@@ -1,0 +1,26 @@
+.github/workflows/deploy-static-website.yaml
+  s_e494ddb2690bdf::t_0df28ee0a58cd6 123-128,263,268-278
+.github/tests/deploy-static-job-boundaries.test.rb
+  s_e494ddb2690bdf::t_d6c01d0e6a7cf3 1-17
+.github/workflows/validate-static-deploy.yaml
+  s_e494ddb2690bdf::t_d6c01d0e6a7cf3 7,14,30-32
+.github/tests/deploy-static-lock-validator.test.rb
+  s_e494ddb2690bdf::t_d6c01d0e6a7cf3 18-38
+  s_e494ddb2690bdf::t_2bcef0ce0533a5 39-53,86-99
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.24",
+  "base_commit_sha": "a3a7362698066f4ece90c8f58060f5914f2bc5b0",
+  "prompts": {},
+  "sessions": {
+    "s_e494ddb2690bdf": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0333d-6bf6-78b1-91b9-1f7413f8c7de",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "mjnong <marcusnagy@icloud.com>"
+    }
+  }
+}
