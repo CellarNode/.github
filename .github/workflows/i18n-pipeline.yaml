@@ -25,9 +25,11 @@ name: i18n — Sync + Translate
 #           repo-wide format, which would drag unrelated source churn
 #           into an automated translation PR.
 #        b. Keep it inside `$LOCALES_PATH/`, `.polyglot-cache.json`, or
-#           `src/`. Change detection diffs the whole worktree but the
-#           commit stages only those three paths, so a write outside
-#           them makes the run red with nothing to commit.
+#           `src/`. Change detection diffs tracked-file changes and the
+#           commit stages only those three paths, so an out-of-scope
+#           write to a tracked file is silently dropped when in-scope
+#           changes exist, reddens the run when it is the only change,
+#           and a new untracked file outside them is a green no-op.
 #        c. The target MUST NOT be excluded by the consumer's own
 #           formatter ignore config. oxfmt exits 2 on a fully-excluded
 #           target ("Expected at least one target file"), and this step
