@@ -187,22 +187,59 @@ jobs:
         env:
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           FORCE_TRANSLATE: ${{ inputs.force-translate }}
+          LOCALES_PATH: ${{ inputs.locales_path }}
+          TARGET_LANGUAGES: ${{ inputs.target_languages }}
+          TRANSLATION_CONTEXT: ${{ inputs.context }}
         run: |
-          FORCE_FLAG=""
-          if [ "$FORCE_TRANSLATE" = "true" ]; then
-            FORCE_FLAG="--force"
+          set -euo pipefail
+          BASE_CACHE="$RUNNER_TEMP/polyglot-cache-base.json"
+          if [ -f .polyglot-cache.json ]; then
+            cp .polyglot-cache.json "$BASE_CACHE"
+          else
+            printf '{}\n' > "$BASE_CACHE"
           fi
 
           # CEL-449 — `pnpm exec` resolves to the consumer's local
           # `polyglot-i18n` devDep (lockfile-pinned). Was a bare
           # invocation reading from the global install before CEL-449.
-          pnpm exec polyglot-i18n translate \
-            --input "./${{ inputs.locales_path }}/en" \
-            --output-languages "${{ inputs.target_languages }}" \
-            --provider gemini \
-            --api-key "$GOOGLE_API_KEY" \
-            --context "${{ inputs.context }}" \
-            $FORCE_FLAG
+          # polyglot-i18n 0.2.x stores source hashes in one cache shared by all
+          # target languages. A multi-language invocation updates that cache
+          # after its first language, causing later languages to skip changed
+          # keys they already contain. Give every language the same original
+          # cache snapshot, then keep one equivalent updated copy.
+          IFS=',' read -r -a languages <<< "$TARGET_LANGUAGES"
+          updated_cache=""
+          index=0
+          for language in "${languages[@]}"; do
+            language="$(printf '%s' "$language" | tr -d '[:space:]')"
+            if [[ ! "$language" =~ ^[a-z]{2}(-[A-Za-z]{2,})?$ ]]; then
+              echo "::error::Invalid target language code: $language"
+              exit 1
+            fi
+
+            language_cache="$RUNNER_TEMP/polyglot-cache-$index.json"
+            cp "$BASE_CACHE" "$language_cache"
+            translate_args=(
+              --input "./$LOCALES_PATH/en"
+              --output-languages "$language"
+              --provider gemini
+              --api-key "$GOOGLE_API_KEY"
+              --context "$TRANSLATION_CONTEXT"
+              --cache-file "$language_cache"
+            )
+            if [ "$FORCE_TRANSLATE" = "true" ]; then
+              translate_args+=(--force)
+            fi
+            pnpm exec polyglot-i18n translate "${translate_args[@]}"
+            updated_cache="$language_cache"
+            index=$((index + 1))
+          done
+
+          if [ -z "$updated_cache" ]; then
+            echo "::error::At least one target language is required"
+            exit 1
+          fi
+          cp "$updated_cache" .polyglot-cache.json
 
       # CEL-434 — `|| true` REMOVED. Previously this step silently swallowed
       # failures. When `i18next-cli types` failed (e.g., because the consuming
