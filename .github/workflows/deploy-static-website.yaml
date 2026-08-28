@@ -190,7 +190,14 @@ jobs:
             finance
             i18n
             ui
+            ui-renderer-0-154
           ].freeze
+          # A version-pinned npm: alias is registry-sourced, but only aliases
+          # that TARGET an allowed @cellarnode package are exempt from the
+          # protocol check (e.g. @cellarnode/ui-renderer-0-154 ->
+          # npm:@cellarnode/ui@0.154.0, the frozen e-label public renderer,
+          # CEL-1522). An npm: alias pointing anywhere else still fails.
+          allowed_registry_alias = /\Anpm:@cellarnode\/(?:#{Regexp.union(allowed_private_packages).source})@[^\s\/\\]+\z/
           failures = []
           manifests = []
           Find.find(".") do |path|
@@ -221,8 +228,12 @@ jobs:
               value.scan(private_package).flatten.each do |package|
                 failures << "#{path}:#{keys.join('.')}" unless allowed_private_packages.include?(package.downcase)
               end
+              # An allowed registry alias is exempt from BOTH source checks: its
+              # scope slash would otherwise trip the path heuristic.
               if keys.any? { |key| dependency_sections.include?(key) } &&
-                 (protocol_dependency_source.match?(value) || path_or_archive_dependency_source.match?(value))
+                 !allowed_registry_alias.match?(value) &&
+                 (protocol_dependency_source.match?(value) ||
+                  path_or_archive_dependency_source.match?(value))
                 failures << "#{path}:#{keys.join('.')}"
               end
             end
@@ -261,6 +272,7 @@ jobs:
             finance
             i18n
             ui
+            ui-renderer-0-154
           ].freeze
           failures = []
           validate_private_packages = lambda do |text, keys|
