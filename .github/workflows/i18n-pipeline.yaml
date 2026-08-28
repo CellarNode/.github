@@ -212,8 +212,8 @@ jobs:
           index=0
           for language in "${languages[@]}"; do
             language="$(printf '%s' "$language" | tr -d '[:space:]')"
-            if [[ ! "$language" =~ ^[a-z]{2}(-[A-Za-z]{2,})?$ ]]; then
-              echo "::error::Invalid target language code: $language"
+            if [ -z "$language" ]; then
+              echo "::error::Target language code must not be empty"
               exit 1
             fi
 
