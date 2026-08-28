@@ -11,6 +11,31 @@ name: i18n — Sync + Translate
 #      `secrets: inherit` (CEL-361). NPM_TOKEN is needed for pnpm
 #      install to authenticate against private `@cellarnode/*` packages.
 #
+#   3. OPTIONAL (CEL-1551): a `format:i18n` script. Define it if the
+#      consumer's formatter would reformat any file this pipeline
+#      regenerates; today that is `src/@types/resources.d.ts`, because
+#      `i18next-cli types` always emits quoted interface keys that oxfmt
+#      unquotes. Without the script, bot PRs land generated files that
+#      fail the consumer's own format gate (importer PR #283). The step
+#      is invoked as `pnpm run --if-present -s format:i18n`, so a repo
+#      that defines no script is unaffected. Three constraints bind any
+#      repo that DOES define one:
+#
+#        a. Scope it to generated paths only. It must never be a
+#           repo-wide format, which would drag unrelated source churn
+#           into an automated translation PR.
+#        b. Keep it inside `$LOCALES_PATH/`, `.polyglot-cache.json`, or
+#           `src/`. Change detection diffs the whole worktree but the
+#           commit stages only those three paths, so a write outside
+#           them makes the run red with nothing to commit.
+#        c. The target MUST NOT be excluded by the consumer's own
+#           formatter ignore config. oxfmt exits 2 on a fully-excluded
+#           target ("Expected at least one target file"), and this step
+#           carries no `|| true`, so an ignore entry left in place while
+#           `format:i18n` points at that path reddens EVERY run of this
+#           pipeline for that repo, including runs with no diff. Remove
+#           the ignore entry and add the script in the same change.
+#
 # Misconfiguration surfaces as a RED workflow run (CEL-434 removed the
 # `|| true` that previously masked these failures).
 
@@ -203,13 +228,20 @@ jobs:
       # step existed. A repo that defines one owns which paths it touches, and
       # that script must name only generated paths. It must never be a
       # repo-wide format, which would drag unrelated source churn into an
-      # automated translation PR.
+      # automated translation PR. The full opt-in contract, including the two
+      # ways a badly-wired script turns this step permanently red (a write
+      # outside the staged paths, and a target excluded by the consumer's own
+      # formatter ignore config), is requirement 3 at the top of this file.
       #
       # `--if-present` must precede the script name. pnpm only parses its own
       # flags before the script name; placed after it, pnpm forwards the flag
-      # to the script and a missing script still exits 1 (verified against
-      # pnpm 10.32.1). A script that exists and fails still exits non-zero and
-      # reddens the pipeline, matching the CEL-434 posture of the step above.
+      # to the script and a missing script still exits 1. Verified on pnpm
+      # 10.32.1 (importer-dashboard) and 10.28.2 (producer-dashboard,
+      # cellarnode-public-site); `pnpm/action-setup@v4` above pins no version,
+      # so each consumer runs its own `packageManager` pnpm. Flag-parsing
+      # semantics are unchanged across 10.x. A script that exists and fails
+      # still exits non-zero and reddens the pipeline, matching the CEL-434
+      # posture of the step above.
       - name: Format regenerated types
         run: pnpm run --if-present -s format:i18n
 
