@@ -40,13 +40,14 @@ abort "Branch-rule API failures must not append response JSON to zero" if auto_m
 abort "Ruleset count must default before the API probe" unless auto_merge_script.include?("RULES=0")
 abort "Classic protection count must default before the API probe" unless auto_merge_script.include?("CLASSIC=0")
 
-ruleset_check_filter = '[.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[]? | select((.context? | type) == "string" and (.context | length) > 0)] | length'
+ruleset_check_filter = 'if type == "array" then [.[] | select(type == "object") | select(.type? == "required_status_checks") | .parameters? | select(type == "object") | .required_status_checks? | select(type == "array") | .[] | select(type == "object") | select((.context? | type) == "string" and (.context | length) > 0)] | length else 0 end'
 abort "Ruleset probe must count configured checks, not rule objects" unless auto_merge_script.include?("--jq '#{ruleset_check_filter}'")
 
 ruleset_fixtures = {
   "no rules" => ["[]", "0"],
   "empty required-check rule" => ['[{"type":"required_status_checks","parameters":{"required_status_checks":[]}}]', "0"],
   "malformed required check" => ['[{"type":"required_status_checks","parameters":{"required_status_checks":[{}]}}]', "0"],
+  "malformed rule beside valid check" => ['[{"type":"required_status_checks","parameters":1},{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"lint"}]}}]', "1"],
   "one configured check" => ['[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"lint"}]}}]', "1"],
   "two rules with three checks" => ['[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"lint"},{"context":"test"}]}},{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"build"}]}}]', "3"],
 }.freeze
