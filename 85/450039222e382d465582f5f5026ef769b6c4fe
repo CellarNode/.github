@@ -1,0 +1,20 @@
+.github/workflows/i18n-pipeline.yaml
+  s_e494ddb2690bdf::t_8e40cc7e1387dc 400-403
+  s_e494ddb2690bdf::t_e5b2d39c17b9b2 129-133,288-291,303-307
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.0",
+  "base_commit_sha": "85450039222e382d465582f5f5026ef769b6c4fe",
+  "prompts": {},
+  "sessions": {
+    "s_e494ddb2690bdf": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0333d-6bf6-78b1-91b9-1f7413f8c7de",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "mjnong <marcusnagy@icloud.com>"
+    }
+  }
+}
