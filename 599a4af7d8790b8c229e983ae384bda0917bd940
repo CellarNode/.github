@@ -1,0 +1,24 @@
+.github/tests/buildkit-mtls-client.test.rb
+  s_b307391c251243::t_fde667d1ab4350 1-72,86-132
+  s_b307391c251243::t_43e16c85ff25ca 73-85
+.github/workflows/deploy-backend.yaml
+  s_b307391c251243::t_46223c9f3a82f7 97-128,130-164
+.github/workflows/validate-backend-deploy.yaml
+  s_b307391c251243::t_9cdf2df82aff32 1-32
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.0",
+  "base_commit_sha": "599a4af7d8790b8c229e983ae384bda0917bd940",
+  "prompts": {},
+  "sessions": {
+    "s_b307391c251243": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8c2f8e8a-6a3a-4ebf-a791-70c464da37fe",
+        "model": "claude-fable-5"
+      },
+      "human_author": "mjnong <marcusnagy@icloud.com>"
+    }
+  }
+}
