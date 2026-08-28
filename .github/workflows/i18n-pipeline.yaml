@@ -123,7 +123,7 @@ jobs:
       NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           # Create PR must authenticate both its push and REST call with the
           # same token. Otherwise checkout's persisted github.token can make

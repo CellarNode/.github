@@ -11,7 +11,8 @@ pipeline_token = workflow
 abort "I18N pipeline token must be required" unless pipeline_token.fetch("required") == true
 
 steps = workflow.fetch("jobs").fetch("sync-translate").fetch("steps")
-checkout = steps.find { |step| step.fetch("uses", "").start_with?("actions/checkout@") }
+checkout = steps.find { |step| step.fetch("uses", "") == "actions/checkout@11d5960a326750d5838078e36cf38b85af677262" }
+abort "Checkout must use the audited v4.4.0 commit" unless checkout
 abort "Checkout must disable persisted credentials" unless checkout&.fetch("with", {})&.fetch("persist-credentials", nil) == false
 
 create_pr = steps.find { |step| step.fetch("id", "") == "create_pr" }
