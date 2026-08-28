@@ -19,8 +19,20 @@ abort "Create PR must use only I18N_PIPELINE_TOKEN" unless create_pr&.fetch("env
 
 script = create_pr.fetch("run")
 abort "Push must not place GH_TOKEN in its URL" if script.include?('x-access-token:${GH_TOKEN}@')
-abort "Push must use an ephemeral credential file" unless script.include?('GIT_CREDENTIAL_FILE="$RUNNER_TEMP/i18n-git-credentials"')
+abort "Credential file creation must use a restrictive umask" unless script.include?("umask 077")
+abort "Push must use an atomic ephemeral credential file" unless script.include?('GIT_CREDENTIAL_FILE=$(mktemp "$RUNNER_TEMP/i18n-git-credentials.XXXXXX")')
 abort "Credential file must be removed on exit" unless script.include?('trap \'rm -f "$GIT_CREDENTIAL_FILE"\' EXIT')
 abort "Push must use the credential-free repository URL" unless script.include?('git push "https://github.com/${GITHUB_REPOSITORY}.git" "$BRANCH"')
+push_index = script.index('git push "https://github.com/${GITHUB_REPOSITORY}.git" "$BRANCH"')
+unset_index = script.index("git config --local --unset-all credential.helper")
+remove_index = script.index('rm -f "$GIT_CREDENTIAL_FILE"', push_index)
+abort "Credential helper must be unset immediately after push" unless unset_index && unset_index > push_index
+abort "Credential file must be removed immediately after push" unless remove_index && remove_index > unset_index
+
+auto_merge = steps.find { |step| step.fetch("name", "") == "Enable auto-merge on the new PR" }
+auto_merge_script = auto_merge.fetch("run")
+abort "Branch-rule API failures must not append response JSON to zero" if auto_merge_script.include?("|| echo 0")
+abort "Ruleset count must default before the API probe" unless auto_merge_script.include?("RULES=0")
+abort "Classic protection count must default before the API probe" unless auto_merge_script.include?("CLASSIC=0")
 
 puts "i18n pipeline authentication boundary: PASS"

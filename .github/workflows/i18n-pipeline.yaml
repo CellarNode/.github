@@ -313,7 +313,8 @@ jobs:
         run: |
           set -euo pipefail
           BRANCH="chore/i18n-pipeline-$(date +%Y%m%d-%H%M%S)"
-          GIT_CREDENTIAL_FILE="$RUNNER_TEMP/i18n-git-credentials"
+          umask 077
+          GIT_CREDENTIAL_FILE=$(mktemp "$RUNNER_TEMP/i18n-git-credentials.XXXXXX")
           trap 'rm -f "$GIT_CREDENTIAL_FILE"' EXIT
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -321,11 +322,13 @@ jobs:
           git add "$LOCALES_PATH/" .polyglot-cache.json src/ || true
           git commit -m "chore(i18n): sync + translate"
           # Keep the PAT out of process arguments. The ephemeral credential
-          # file is runner-local, mode 0600, and removed by the EXIT trap.
+          # file is created atomically as mode 0600 and removed immediately
+          # after the push; the EXIT trap remains as failure-path cleanup.
           printf 'https://x-access-token:%s@github.com\n' "$GH_TOKEN" > "$GIT_CREDENTIAL_FILE"
-          chmod 600 "$GIT_CREDENTIAL_FILE"
           git config --local credential.helper "store --file=$GIT_CREDENTIAL_FILE"
           git push "https://github.com/${GITHUB_REPOSITORY}.git" "$BRANCH"
+          git config --local --unset-all credential.helper
+          rm -f "$GIT_CREDENTIAL_FILE"
           cat > "$RUNNER_TEMP/i18n-pr-body.md" <<'PR_BODY_EOF'
           Automated i18n pipeline: synced locale files, translated via Gemini, regenerated types.
 
@@ -443,10 +446,22 @@ jobs:
           # PR is immediately mergeable) or — in the brief window while
           # mergeability is still UNKNOWN — merges instantly with zero gates,
           # and that push triggers the consumers' production deploy workflows.
-          RULES=$(gh api "repos/${GITHUB_REPOSITORY}/rules/branches/${GITHUB_REF_NAME}" \
-            --jq '[.[] | select(.type == "required_status_checks")] | length' 2>/dev/null || echo 0)
-          CLASSIC=$(gh api "repos/${GITHUB_REPOSITORY}/branches/${GITHUB_REF_NAME}/protection/required_status_checks" \
-            --jq '.checks | length' 2>/dev/null || echo 0)
+          RULES=0
+          if RULES_QUERY=$(gh api "repos/${GITHUB_REPOSITORY}/rules/branches/${GITHUB_REF_NAME}" \
+            --jq '[.[] | select(.type == "required_status_checks")] | length' 2>/dev/null); then
+            case "$RULES_QUERY" in
+              ''|*[!0-9]*) ;;
+              *) RULES="$RULES_QUERY" ;;
+            esac
+          fi
+          CLASSIC=0
+          if CLASSIC_QUERY=$(gh api "repos/${GITHUB_REPOSITORY}/branches/${GITHUB_REF_NAME}/protection/required_status_checks" \
+            --jq '.checks | length' 2>/dev/null); then
+            case "$CLASSIC_QUERY" in
+              ''|*[!0-9]*) ;;
+              *) CLASSIC="$CLASSIC_QUERY" ;;
+            esac
+          fi
           if [ "${RULES:-0}" = "0" ] && [ "${CLASSIC:-0}" = "0" ]; then
             echo "::warning::${GITHUB_REF_NAME} has no required status checks — refusing to arm auto-merge (it would merge ungated and deploy). Add branch protection or a ruleset requiring CI, then auto-merge activates on the next run."
             exit 0
