@@ -21,13 +21,14 @@ script = create_pr.fetch("run")
 abort "Push must not place GH_TOKEN in its URL" if script.include?('x-access-token:${GH_TOKEN}@')
 abort "Credential file creation must use a restrictive umask" unless script.include?("umask 077")
 abort "Push must use an atomic ephemeral credential file" unless script.include?('GIT_CREDENTIAL_FILE=$(mktemp "$RUNNER_TEMP/i18n-git-credentials.XXXXXX")')
-abort "Credential file must be removed on exit" unless script.include?('trap \'rm -f "$GIT_CREDENTIAL_FILE"\' EXIT')
+abort "Credential cleanup must cover failure paths" unless script.include?("trap cleanup_git_credentials EXIT")
+abort "Failure cleanup must unset the helper" unless script.include?("git config --local --unset-all credential.helper >/dev/null 2>&1 || true")
 abort "Push must use the credential-free repository URL" unless script.include?('git push "https://github.com/${GITHUB_REPOSITORY}.git" "$BRANCH"')
 push_index = script.index('git push "https://github.com/${GITHUB_REPOSITORY}.git" "$BRANCH"')
-unset_index = script.index("git config --local --unset-all credential.helper")
-remove_index = script.index('rm -f "$GIT_CREDENTIAL_FILE"', push_index)
-abort "Credential helper must be unset immediately after push" unless unset_index && unset_index > push_index
-abort "Credential file must be removed immediately after push" unless remove_index && remove_index > unset_index
+cleanup_index = script.index("cleanup_git_credentials\n", push_index)
+clear_trap_index = script.index("trap - EXIT", push_index)
+abort "Credentials must be cleaned immediately after push" unless cleanup_index && cleanup_index > push_index
+abort "Credential cleanup trap must be cleared after success" unless clear_trap_index && clear_trap_index > cleanup_index
 
 auto_merge = steps.find { |step| step.fetch("name", "") == "Enable auto-merge on the new PR" }
 auto_merge_script = auto_merge.fetch("run")

@@ -314,8 +314,15 @@ jobs:
           set -euo pipefail
           BRANCH="chore/i18n-pipeline-$(date +%Y%m%d-%H%M%S)"
           umask 077
+          GIT_CREDENTIAL_FILE=""
+          cleanup_git_credentials() {
+            git config --local --unset-all credential.helper >/dev/null 2>&1 || true
+            if [ -n "$GIT_CREDENTIAL_FILE" ]; then
+              rm -f "$GIT_CREDENTIAL_FILE"
+            fi
+          }
+          trap cleanup_git_credentials EXIT
           GIT_CREDENTIAL_FILE=$(mktemp "$RUNNER_TEMP/i18n-git-credentials.XXXXXX")
-          trap 'rm -f "$GIT_CREDENTIAL_FILE"' EXIT
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git checkout -b "$BRANCH"
@@ -327,8 +334,8 @@ jobs:
           printf 'https://x-access-token:%s@github.com\n' "$GH_TOKEN" > "$GIT_CREDENTIAL_FILE"
           git config --local credential.helper "store --file=$GIT_CREDENTIAL_FILE"
           git push "https://github.com/${GITHUB_REPOSITORY}.git" "$BRANCH"
-          git config --local --unset-all credential.helper
-          rm -f "$GIT_CREDENTIAL_FILE"
+          cleanup_git_credentials
+          trap - EXIT
           cat > "$RUNNER_TEMP/i18n-pr-body.md" <<'PR_BODY_EOF'
           Automated i18n pipeline: synced locale files, translated via Gemini, regenerated types.
 
