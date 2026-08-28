@@ -189,6 +189,30 @@ jobs:
       - name: Generate TypeScript types
         run: pnpm exec i18next-cli types
 
+      # CEL-1551 — the `i18next-cli types` emitter is not format-stable: it
+      # always writes quoted interface keys (`"auth": { ... }`), which the
+      # consumers' formatter then unquotes. Bot PRs therefore landed types
+      # that failed the consumer's own `make format-check`, and importer
+      # PR #283 had to be rescued by hand with a follow-up format commit
+      # (8024be9d) before it could merge. Formatting here, between generation
+      # and the `git add` below, makes the committed types house-formatted in
+      # the same run that regenerates them.
+      #
+      # Contract: opt-in, and scoped by the consumer rather than by us. A repo
+      # with no `format:i18n` script behaves exactly as it did before this
+      # step existed. A repo that defines one owns which paths it touches, and
+      # that script must name only generated paths. It must never be a
+      # repo-wide format, which would drag unrelated source churn into an
+      # automated translation PR.
+      #
+      # `--if-present` must precede the script name. pnpm only parses its own
+      # flags before the script name; placed after it, pnpm forwards the flag
+      # to the script and a missing script still exits 1 (verified against
+      # pnpm 10.32.1). A script that exists and fails still exits non-zero and
+      # reddens the pipeline, matching the CEL-434 posture of the step above.
+      - name: Format regenerated types
+        run: pnpm run --if-present -s format:i18n
+
       - name: Check for changes
         id: diff
         run: |
