@@ -1,0 +1,32 @@
+name: Validate shared backend deploy workflow
+
+on:
+  pull_request:
+    paths:
+      - .github/tests/buildkit-mtls-client.test.rb
+      - .github/workflows/deploy-backend.yaml
+      - .github/workflows/validate-backend-deploy.yaml
+  push:
+    branches: [main]
+    paths:
+      - .github/tests/buildkit-mtls-client.test.rb
+      - .github/workflows/deploy-backend.yaml
+      - .github/workflows/validate-backend-deploy.yaml
+
+permissions:
+  contents: read
+
+jobs:
+  buildkit-mtls-client:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+
+      # Client half of the CEL-1513 invariant. The server half is
+      # scripts/verify_buildkit_mtls.py in CellarNode/crossplane-gcloud; both
+      # halves have to hold for the control to exist.
+      - name: Test BuildKit mTLS client contract
+        run: ruby .github/tests/buildkit-mtls-client.test.rb
