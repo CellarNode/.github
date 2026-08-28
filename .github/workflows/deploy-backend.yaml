@@ -94,12 +94,74 @@ jobs:
             fi
           fi
 
-      # Plain TCP is accepted here: private single-tenant cluster, and the
-      # legacy GKE dataplane doesn't enforce NetworkPolicy. Revisit (TLS via
-      # --driver-opt cacert/cert/key, or DPv2 + NetworkPolicy) if the cluster
-      # ever becomes multi-tenant.
+      # CEL-1513 step 1 of 3 — mutual TLS on the shared buildkitd, with a
+      # plaintext fallback. Server side is CellarNode/crossplane-gcloud#78
+      # (runbook: docs/buildkit-mtls.md there).
+      #
+      # buildkitd applies TLS per listener and one daemon cannot serve
+      # plaintext and TLS on the same TCP port, so the server cutover is
+      # atomic and it spans two repos. This step lands FIRST and is correct on
+      # both sides of it:
+      #
+      #   - server plaintext (today): the client leaf is not in the cluster
+      #     yet, /run/buildkit/certs is absent, the guard is false, and the
+      #     plaintext create runs exactly as before.
+      #   - server TLS (after #78 syncs): ARC's container-hook extension mounts
+      #     the client leaf into every job pod at /run/buildkit/certs, the
+      #     guard is true, and the mTLS builder bootstraps.
+      #   - mid-sync, either order: whichever path fails the handshake falls
+      #     through to the other, and if neither connects the step fails here
+      #     rather than at the first build.
+      #
+      # `docker buildx create` does not dial the daemon — it only records the
+      # endpoint. `inspect --bootstrap` is what performs the handshake, so
+      # both paths are keyed on it and not on create's exit status.
+      #
+      # Certificate file names are cert-manager's (ca.crt / tls.crt / tls.key)
+      # and the paths must be absolute. No `servername` override: the server
+      # leaf's SAN list covers the FQDN dialled below.
+      #
+      # STEP 3 of 3 removes the fallback branch, leaving only the mTLS path.
+      # Until it does, a server-side regression that dropped --tlscacert would
+      # silently downgrade CI to plaintext instead of failing the build.
+      # .github/tests/buildkit-mtls-client.test.rb pins that transition: flip
+      # PLAINTEXT_FALLBACK_EXPECTED there in the same commit.
       - name: Connect to in-cluster buildkitd
-        run: docker buildx create --name k8s-buildkit --driver remote tcp://buildkitd.buildkit.svc.cluster.local:1234 --use
+        env:
+          BUILDKITD_ADDR: tcp://buildkitd.buildkit.svc.cluster.local:1234
+          BUILDKITD_CERT_DIR: /run/buildkit/certs
+        run: |
+          set -euo pipefail
+
+          recreate() {
+            docker buildx rm k8s-buildkit >/dev/null 2>&1 || true
+            docker buildx create --name k8s-buildkit --driver remote "$@" \
+              "$BUILDKITD_ADDR" --use
+          }
+
+          connected=false
+
+          if [ -r "${BUILDKITD_CERT_DIR}/ca.crt" ] \
+            && [ -r "${BUILDKITD_CERT_DIR}/tls.crt" ] \
+            && [ -r "${BUILDKITD_CERT_DIR}/tls.key" ]; then
+            echo "buildkitd client certificate found - connecting with mutual TLS"
+            recreate \
+              --driver-opt "cacert=${BUILDKITD_CERT_DIR}/ca.crt" \
+              --driver-opt "cert=${BUILDKITD_CERT_DIR}/tls.crt" \
+              --driver-opt "key=${BUILDKITD_CERT_DIR}/tls.key"
+            if docker buildx inspect --bootstrap k8s-buildkit; then
+              connected=true
+            else
+              echo "::warning title=buildkitd mTLS handshake failed::Falling back to plaintext (CEL-1513 step 1 of 3). If buildkitd is already TLS-only this build will fail at connect - re-run it."
+            fi
+          else
+            echo "no buildkitd client certificate at ${BUILDKITD_CERT_DIR} - using plaintext (CEL-1513 step 1 of 3)"
+          fi
+
+          if [ "$connected" != true ]; then
+            recreate
+            docker buildx inspect --bootstrap k8s-buildkit
+          fi
 
       - name: Authenticate to Google Cloud
         id: auth
