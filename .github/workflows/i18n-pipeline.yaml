@@ -88,13 +88,11 @@ on:
       I18N_PIPELINE_TOKEN:
         description: >-
           Fine-grained PAT (Contents RW + Pull requests RW on the consumer
-          repos) used to author/push the i18n PR so its `on: pull_request` CI
-          fires, and to arm auto-merge (CEL-1259 steps 2-3). Optional —
-          callers on `secrets: inherit` forward it automatically once the org
-          secret exists; explicit-map callers must forward it by name. Absent,
-          the pipeline falls back to github.token (PR opens, CI parked, no
-          auto-merge).
-        required: false
+          repos) used to push the generated branch and create its PR through
+          REST so `on: pull_request` CI fires. Callers on `secrets: inherit`
+          forward the organization secret automatically; explicit-map callers
+          must forward it by name.
+        required: true
 
 jobs:
   sync-translate:
@@ -125,7 +123,12 @@ jobs:
       NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          # Create PR must authenticate both its push and REST call with the
+          # same token. Otherwise checkout's persisted github.token can make
+          # the push succeed while a stale PAT fails seconds later.
+          persist-credentials: false
 
       # CEL-384 prong 1b: catch the most-common failure mode — caller did not
       # forward NPM_TOKEN but the repo has private @cellarnode/* deps — and
@@ -156,12 +159,12 @@ jobs:
           fi
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: ${{ inputs.node_version }}
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
 
       - name: Install project dependencies
         run: pnpm install --frozen-lockfile
@@ -184,22 +187,74 @@ jobs:
         env:
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           FORCE_TRANSLATE: ${{ inputs.force-translate }}
+          LOCALES_PATH: ${{ inputs.locales_path }}
+          TARGET_LANGUAGES: ${{ inputs.target_languages }}
+          TRANSLATION_CONTEXT: ${{ inputs.context }}
         run: |
-          FORCE_FLAG=""
-          if [ "$FORCE_TRANSLATE" = "true" ]; then
-            FORCE_FLAG="--force"
+          set -euo pipefail
+          BASE_CACHE="$RUNNER_TEMP/polyglot-cache-base.json"
+          if [ -f .polyglot-cache.json ]; then
+            cp .polyglot-cache.json "$BASE_CACHE"
+          else
+            printf '{}\n' > "$BASE_CACHE"
           fi
 
           # CEL-449 — `pnpm exec` resolves to the consumer's local
           # `polyglot-i18n` devDep (lockfile-pinned). Was a bare
           # invocation reading from the global install before CEL-449.
-          pnpm exec polyglot-i18n translate \
-            --input "./${{ inputs.locales_path }}/en" \
-            --output-languages "${{ inputs.target_languages }}" \
-            --provider gemini \
-            --api-key "$GOOGLE_API_KEY" \
-            --context "${{ inputs.context }}" \
-            $FORCE_FLAG
+          # polyglot-i18n 0.2.x stores source hashes in one cache shared by all
+          # target languages. A multi-language invocation updates that cache
+          # after its first language, causing later languages to skip changed
+          # keys they already contain. Give every language the same original
+          # cache snapshot, then keep one equivalent updated copy.
+          if [[ -z "$TARGET_LANGUAGES" ]]; then
+            echo "::error::Target language code must not be empty"
+            exit 1
+          fi
+          if [[ "$TARGET_LANGUAGES" == *$'\n'* || "$TARGET_LANGUAGES" == *$'\r'* ]]; then
+            echo "::error::Target language code must not contain line breaks"
+            exit 1
+          fi
+          if [[ "$TARGET_LANGUAGES" == *, ]]; then
+            echo "::error::Target language code must not be empty"
+            exit 1
+          fi
+          IFS=',' read -r -a languages <<< "$TARGET_LANGUAGES"
+          for language_index in "${!languages[@]}"; do
+            language="$(printf '%s' "${languages[language_index]}" | tr -d '[:space:]')"
+            if [ -z "$language" ]; then
+              echo "::error::Target language code must not be empty"
+              exit 1
+            fi
+            languages[language_index]="$language"
+          done
+
+          updated_cache=""
+          index=0
+          for language in "${languages[@]}"; do
+            language_cache="$RUNNER_TEMP/polyglot-cache-$index.json"
+            cp "$BASE_CACHE" "$language_cache"
+            translate_args=(
+              --input "./$LOCALES_PATH/en"
+              --output-languages "$language"
+              --provider gemini
+              --api-key "$GOOGLE_API_KEY"
+              --context "$TRANSLATION_CONTEXT"
+              --cache-file "$language_cache"
+            )
+            if [ "$FORCE_TRANSLATE" = "true" ]; then
+              translate_args+=(--force)
+            fi
+            pnpm exec polyglot-i18n translate "${translate_args[@]}"
+            updated_cache="$language_cache"
+            index=$((index + 1))
+          done
+
+          if [ -z "$updated_cache" ]; then
+            echo "::error::At least one target language is required"
+            exit 1
+          fi
+          cp "$updated_cache" .polyglot-cache.json
 
       # CEL-434 — `|| true` REMOVED. Previously this step silently swallowed
       # failures. When `i18next-cli types` failed (e.g., because the consuming
@@ -264,26 +319,38 @@ jobs:
         id: create_pr
         if: steps.diff.outputs.changed == 'true'
         env:
-          # CEL-1259 step 2/3 — prefer the org's I18N_PIPELINE_TOKEN (fine-
-          # grained PAT forwarded via `secrets: inherit`, the CEL-361 caller
-          # contract). PRs authored (and branches pushed) with github.token
-          # never trigger `on: pull_request`, so their CI parks at
-          # action_required forever. Falls back to github.token so the
-          # pipeline keeps working (with parked CI) until the secret exists.
-          GH_TOKEN: ${{ secrets.I18N_PIPELINE_TOKEN || github.token }}
+          # CEL-1259 step 2/3 — the organization PAT is the sole credential for
+          # branch push and REST PR creation. github.token-authored PRs never
+          # trigger `on: pull_request`, so falling back would park CI at
+          # action_required forever.
+          GH_TOKEN: ${{ secrets.I18N_PIPELINE_TOKEN }}
           LOCALES_PATH: ${{ inputs.locales_path }}
         run: |
           set -euo pipefail
           BRANCH="chore/i18n-pipeline-$(date +%Y%m%d-%H%M%S)"
+          umask 077
+          GIT_CREDENTIAL_FILE=""
+          cleanup_git_credentials() {
+            git config --local --unset-all credential.helper >/dev/null 2>&1 || true
+            if [ -n "$GIT_CREDENTIAL_FILE" ]; then
+              rm -f "$GIT_CREDENTIAL_FILE"
+            fi
+          }
+          trap cleanup_git_credentials EXIT
+          GIT_CREDENTIAL_FILE=$(mktemp "$RUNNER_TEMP/i18n-git-credentials.XXXXXX")
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git checkout -b "$BRANCH"
           git add "$LOCALES_PATH/" .polyglot-cache.json src/ || true
           git commit -m "chore(i18n): sync + translate"
-          # Push with GH_TOKEN (not the checkout-persisted github.token) so the
-          # branch and the PR share the same author identity — required for the
-          # PR's `on: pull_request` CI to fire when the PAT is configured.
-          git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$BRANCH"
+          # Keep the PAT out of process arguments. The ephemeral credential
+          # file is created atomically as mode 0600 and removed immediately
+          # after the push; the EXIT trap remains as failure-path cleanup.
+          printf 'https://x-access-token:%s@github.com\n' "$GH_TOKEN" > "$GIT_CREDENTIAL_FILE"
+          git config --local credential.helper "store --file=$GIT_CREDENTIAL_FILE"
+          git push "https://github.com/${GITHUB_REPOSITORY}.git" "$BRANCH"
+          cleanup_git_credentials
+          trap - EXIT
           cat > "$RUNNER_TEMP/i18n-pr-body.md" <<'PR_BODY_EOF'
           Automated i18n pipeline: synced locale files, translated via Gemini, regenerated types.
 
@@ -294,18 +361,23 @@ jobs:
           backlog would trip GitHub's secondary rate limit on content creation, so
           the supersession notice lives here instead.
           PR_BODY_EOF
-          # REST, not `gh pr create`: fine-grained PATs cannot authenticate
-          # against api.github.com/graphql (observed live: HTTP 401 "Bad
-          # credentials (https://api.github.com/graphql)" from a valid PAT
-          # whose git push succeeded seconds earlier, run 33106558320).
-          # `gh pr create` touches GraphQL; `gh api` POST /pulls is pure REST
-          # and works with fine-grained PATs.
-          PR_NUMBER=$(gh api "repos/${GITHUB_REPOSITORY}/pulls" \
+          # REST, not `gh pr create`: this keeps the token contract limited to
+          # repository Contents and Pull requests permissions. Run 33157661915
+          # proved why checkout credentials must be disabled: github.token
+          # authenticated the push while a shadowed stale PAT failed this REST
+          # call with HTTP 401.
+          if ! PR_NUMBER=$(gh api "repos/${GITHUB_REPOSITORY}/pulls" \
             -f title="chore(i18n): sync + translate" \
             -F body=@"$RUNNER_TEMP/i18n-pr-body.md" \
             -f base="${GITHUB_REF_NAME}" \
             -f head="$BRANCH" \
-            --jq '.number')
+            --jq '.number'); then
+            echo "::error::PR creation failed; deleting pushed branch $BRANCH"
+            if ! gh api --method DELETE "repos/${GITHUB_REPOSITORY}/git/refs/heads/$BRANCH" >/dev/null; then
+              echo "::warning::Could not delete orphan branch $BRANCH after PR creation failed; remove it manually."
+            fi
+            exit 1
+          fi
           echo "Opened PR #$PR_NUMBER"
           case "$PR_NUMBER" in
             ''|*[!0-9]*)
@@ -384,40 +456,40 @@ jobs:
       # CEL-1259 step 3/3 — flip auto-merge on the fresh PR so it lands the
       # moment its required checks go green. Only meaningful when the PR was
       # authored with I18N_PIPELINE_TOKEN (step 2): a github.token PR never
-      # gets CI, so auto-merge would either wait forever or — worse, on a repo
-      # with no required checks — merge translations with zero gates. The
-      # in-script guard therefore skips silently until the secret exists.
+      # gets CI, so the reusable workflow requires the PAT at launch.
       # `allow_auto_merge` is enabled on all three consumer repos (2026-08-27).
       - name: Enable auto-merge on the new PR
         if: success() && steps.diff.outputs.changed == 'true' && steps.create_pr.outputs.pr_number != ''
         continue-on-error: true
         env:
-          # The CALL uses github.token, not the PAT: `gh pr merge --auto` is a
-          # GraphQL mutation (enablePullRequestAutoMerge) and fine-grained PATs
-          # cannot authenticate against the GraphQL API (the same 401 that
-          # broke `gh pr create`, run 33106558320). github.token is
-          # GraphQL-capable and enabling auto-merge on someone else's PR only
-          # needs repo write. PAT_CONFIGURED still gates the step: a
-          # github.token-AUTHORED PR gets no CI, so arming auto-merge on one
-          # would either hang forever or (no required checks) merge ungated.
+          # The auto-merge step uses github.token for branch-rule REST probes
+          # and the GraphQL mutation. The PAT contract stops at branch push and
+          # REST PR creation.
           GH_TOKEN: ${{ github.token }}
-          PAT_CONFIGURED: ${{ secrets.I18N_PIPELINE_TOKEN != '' }}
           NEW_PR_NUMBER: ${{ steps.create_pr.outputs.pr_number }}
         run: |
           set -u
-          if [ "${PAT_CONFIGURED}" != "true" ]; then
-            echo "I18N_PIPELINE_TOKEN not configured — skipping auto-merge (CEL-1259 step 2 pending)."
-            exit 0
-          fi
           # Refuse to arm auto-merge unless the base branch has required
           # status checks. With none, GitHub either rejects the mutation (the
           # PR is immediately mergeable) or — in the brief window while
           # mergeability is still UNKNOWN — merges instantly with zero gates,
           # and that push triggers the consumers' production deploy workflows.
-          RULES=$(gh api "repos/${GITHUB_REPOSITORY}/rules/branches/${GITHUB_REF_NAME}" \
-            --jq '[.[] | select(.type == "required_status_checks")] | length' 2>/dev/null || echo 0)
-          CLASSIC=$(gh api "repos/${GITHUB_REPOSITORY}/branches/${GITHUB_REF_NAME}/protection/required_status_checks" \
-            --jq '.checks | length' 2>/dev/null || echo 0)
+          RULES=0
+          if RULES_QUERY=$(gh api "repos/${GITHUB_REPOSITORY}/rules/branches/${GITHUB_REF_NAME}" \
+            --jq 'if type == "array" then [.[] | select(type == "object") | select(.type? == "required_status_checks") | .parameters? | select(type == "object") | .required_status_checks? | select(type == "array") | .[] | select(type == "object") | select((.context? | type) == "string" and (.context | length) > 0)] | length else 0 end' 2>/dev/null); then
+            case "$RULES_QUERY" in
+              ''|*[!0-9]*) ;;
+              *) RULES="$RULES_QUERY" ;;
+            esac
+          fi
+          CLASSIC=0
+          if CLASSIC_QUERY=$(gh api "repos/${GITHUB_REPOSITORY}/branches/${GITHUB_REF_NAME}/protection/required_status_checks" \
+            --jq 'if (.checks? | type) == "array" then [.checks[] | select((.context? | type) == "string" and (.context | length) > 0)] | length else 0 end' 2>/dev/null); then
+            case "$CLASSIC_QUERY" in
+              ''|*[!0-9]*) ;;
+              *) CLASSIC="$CLASSIC_QUERY" ;;
+            esac
+          fi
           if [ "${RULES:-0}" = "0" ] && [ "${CLASSIC:-0}" = "0" ]; then
             echo "::warning::${GITHUB_REF_NAME} has no required status checks — refusing to arm auto-merge (it would merge ungated and deploy). Add branch protection or a ruleset requiring CI, then auto-merge activates on the next run."
             exit 0
