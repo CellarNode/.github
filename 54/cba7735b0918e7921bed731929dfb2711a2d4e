@@ -1,0 +1,24 @@
+.github/tests/i18n-pipeline-translation-cache.test.rb
+  s_e494ddb2690bdf::t_43ae12380ec080 65
+  s_e494ddb2690bdf::t_c4b7e6e0be2322 1-2,25-64,66-74
+  s_e494ddb2690bdf::t_c70dadc408169d 75
+.github/workflows/i18n-pipeline.yaml
+  s_e494ddb2690bdf::t_3c32aa5ff1d2c4 210-213,226,228-230
+  s_e494ddb2690bdf::t_dc043b31f97d67 219-220,225
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.0",
+  "base_commit_sha": "54cba7735b0918e7921bed731929dfb2711a2d4e",
+  "prompts": {},
+  "sessions": {
+    "s_e494ddb2690bdf": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0333d-6bf6-78b1-91b9-1f7413f8c7de",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "github-actions[bot] <github-actions[bot]@users.noreply.github.com>"
+    }
+  }
+}
