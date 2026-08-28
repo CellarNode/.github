@@ -459,7 +459,7 @@ jobs:
           # and that push triggers the consumers' production deploy workflows.
           RULES=0
           if RULES_QUERY=$(gh api "repos/${GITHUB_REPOSITORY}/rules/branches/${GITHUB_REF_NAME}" \
-            --jq '[.[] | select(.type == "required_status_checks")] | length' 2>/dev/null); then
+            --jq '[.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[]? | select((.context? | type) == "string" and (.context | length) > 0)] | length' 2>/dev/null); then
             case "$RULES_QUERY" in
               ''|*[!0-9]*) ;;
               *) RULES="$RULES_QUERY" ;;

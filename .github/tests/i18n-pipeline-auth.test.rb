@@ -1,3 +1,4 @@
+require "open3"
 require "yaml"
 
 workflow_path = File.expand_path("../workflows/i18n-pipeline.yaml", __dir__)
@@ -38,5 +39,21 @@ auto_merge_script = auto_merge.fetch("run")
 abort "Branch-rule API failures must not append response JSON to zero" if auto_merge_script.include?("|| echo 0")
 abort "Ruleset count must default before the API probe" unless auto_merge_script.include?("RULES=0")
 abort "Classic protection count must default before the API probe" unless auto_merge_script.include?("CLASSIC=0")
+
+ruleset_check_filter = '[.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[]? | select((.context? | type) == "string" and (.context | length) > 0)] | length'
+abort "Ruleset probe must count configured checks, not rule objects" unless auto_merge_script.include?("--jq '#{ruleset_check_filter}'")
+
+ruleset_fixtures = {
+  "no rules" => ["[]", "0"],
+  "empty required-check rule" => ['[{"type":"required_status_checks","parameters":{"required_status_checks":[]}}]', "0"],
+  "malformed required check" => ['[{"type":"required_status_checks","parameters":{"required_status_checks":[{}]}}]', "0"],
+  "one configured check" => ['[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"lint"}]}}]', "1"],
+  "two rules with three checks" => ['[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"lint"},{"context":"test"}]}},{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"build"}]}}]', "3"],
+}.freeze
+
+ruleset_fixtures.each do |name, (payload, expected)|
+  output, status = Open3.capture2e("jq", "-r", ruleset_check_filter, stdin_data: payload)
+  abort "Ruleset fixture #{name} failed: #{output}" unless status.success? && output.strip == expected
+end
 
 puts "i18n pipeline authentication boundary: PASS"
