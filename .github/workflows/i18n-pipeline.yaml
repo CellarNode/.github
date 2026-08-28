@@ -207,20 +207,27 @@ jobs:
           # after its first language, causing later languages to skip changed
           # keys they already contain. Give every language the same original
           # cache snapshot, then keep one equivalent updated copy.
+          if [[ -z "$TARGET_LANGUAGES" ]]; then
+            echo "::error::Target language code must not be empty"
+            exit 1
+          fi
           if [[ "$TARGET_LANGUAGES" == *, ]]; then
             echo "::error::Target language code must not be empty"
             exit 1
           fi
           IFS=',' read -r -a languages <<< "$TARGET_LANGUAGES"
-          updated_cache=""
-          index=0
-          for language in "${languages[@]}"; do
-            language="$(printf '%s' "$language" | tr -d '[:space:]')"
+          for language_index in "${!languages[@]}"; do
+            language="$(printf '%s' "${languages[language_index]}" | tr -d '[:space:]')"
             if [ -z "$language" ]; then
               echo "::error::Target language code must not be empty"
               exit 1
             fi
+            languages[language_index]="$language"
+          done
 
+          updated_cache=""
+          index=0
+          for language in "${languages[@]}"; do
             language_cache="$RUNNER_TEMP/polyglot-cache-$index.json"
             cp "$BASE_CACHE" "$language_cache"
             translate_args=(
