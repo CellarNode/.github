@@ -12,6 +12,8 @@ abort "Translation context must cross into the shell as data" unless env.fetch("
 
 script = translate.fetch("run")
 abort "Translation must snapshot the original cache" unless script.include?('cp .polyglot-cache.json "$BASE_CACHE"')
+abort "Translation must initialize an empty cache" unless script.include?(%q{printf '{}\n' > "$BASE_CACHE"})
+abort "Translation must reject a trailing language delimiter" unless script.include?('if [[ "$TARGET_LANGUAGES" == *, ]]; then')
 abort "Translation must process one target language at a time" unless script.include?('for language in "${languages[@]}"; do')
 abort "Every language must start from the original cache" unless script.include?('cp "$BASE_CACHE" "$language_cache"')
 abort "CLI must receive one target language per invocation" unless script.include?('--output-languages "$language"')

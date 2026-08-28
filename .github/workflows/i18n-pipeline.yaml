@@ -207,6 +207,10 @@ jobs:
           # after its first language, causing later languages to skip changed
           # keys they already contain. Give every language the same original
           # cache snapshot, then keep one equivalent updated copy.
+          if [[ "$TARGET_LANGUAGES" == *, ]]; then
+            echo "::error::Target language code must not be empty"
+            exit 1
+          fi
           IFS=',' read -r -a languages <<< "$TARGET_LANGUAGES"
           updated_cache=""
           index=0
