@@ -1,0 +1,30 @@
+name: Validate i18n pipeline
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/i18n-pipeline.yaml
+      - .github/tests/i18n-pipeline-*.test.rb
+      - .github/workflows/validate-i18n-pipeline.yaml
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/i18n-pipeline.yaml
+      - .github/tests/i18n-pipeline-*.test.rb
+      - .github/workflows/validate-i18n-pipeline.yaml
+
+permissions:
+  contents: read
+
+jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate authentication boundaries
+        run: ruby .github/tests/i18n-pipeline-auth.test.rb
+
+      - name: Validate translation cache isolation
+        run: ruby .github/tests/i18n-pipeline-translation-cache.test.rb
