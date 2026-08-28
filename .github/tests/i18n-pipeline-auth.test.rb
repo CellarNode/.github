@@ -14,6 +14,8 @@ steps = workflow.fetch("jobs").fetch("sync-translate").fetch("steps")
 checkout = steps.find { |step| step.fetch("uses", "") == "actions/checkout@11d5960a326750d5838078e36cf38b85af677262" }
 abort "Checkout must use the audited v4.4.0 commit" unless checkout
 abort "Checkout must disable persisted credentials" unless checkout&.fetch("with", {})&.fetch("persist-credentials", nil) == false
+abort "setup-node must use an audited commit" unless steps.any? { |step| step.fetch("uses", "") == "actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020" }
+abort "pnpm setup must use an audited commit" unless steps.any? { |step| step.fetch("uses", "") == "pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1" }
 
 create_pr = steps.find { |step| step.fetch("id", "") == "create_pr" }
 abort "Create PR must use only I18N_PIPELINE_TOKEN" unless create_pr&.fetch("env", {})&.fetch("GH_TOKEN", nil) == "${{ secrets.I18N_PIPELINE_TOKEN }}"
