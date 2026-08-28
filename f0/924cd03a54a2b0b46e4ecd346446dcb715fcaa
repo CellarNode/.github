@@ -1,0 +1,24 @@
+.github/workflows/i18n-pipeline.yaml
+  s_e494ddb2690bdf::t_bde2650b34976e 462
+.github/tests/i18n-pipeline-auth.test.rb
+  s_e494ddb2690bdf::t_bde2650b34976e 43
+  s_e494ddb2690bdf::t_04314eed28d4df 49
+  s_e494ddb2690bdf::t_cde48a24eb8104 1,44-48,50-57
+  s_e494ddb2690bdf::t_38cf975d5c82e7 58
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.0",
+  "base_commit_sha": "f0924cd03a54a2b0b46e4ecd346446dcb715fcaa",
+  "prompts": {},
+  "sessions": {
+    "s_e494ddb2690bdf": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0333d-6bf6-78b1-91b9-1f7413f8c7de",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "github-actions[bot] <github-actions[bot]@users.noreply.github.com>"
+    }
+  }
+}
