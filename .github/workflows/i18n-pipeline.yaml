@@ -467,7 +467,7 @@ jobs:
           fi
           CLASSIC=0
           if CLASSIC_QUERY=$(gh api "repos/${GITHUB_REPOSITORY}/branches/${GITHUB_REF_NAME}/protection/required_status_checks" \
-            --jq '.checks | length' 2>/dev/null); then
+            --jq 'if (.checks? | type) == "array" then [.checks[] | select((.context? | type) == "string" and (.context | length) > 0)] | length else 0 end' 2>/dev/null); then
             case "$CLASSIC_QUERY" in
               ''|*[!0-9]*) ;;
               *) CLASSIC="$CLASSIC_QUERY" ;;

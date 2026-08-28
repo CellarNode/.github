@@ -56,4 +56,22 @@ ruleset_fixtures.each do |name, (payload, expected)|
   abort "Ruleset fixture #{name} failed: #{output}" unless status.success? && output.strip == expected
 end
 
+classic_check_filter = 'if (.checks? | type) == "array" then [.checks[] | select((.context? | type) == "string" and (.context | length) > 0)] | length else 0 end'
+abort "Classic probe must count valid configured checks" unless auto_merge_script.include?("--jq '#{classic_check_filter}'")
+
+classic_fixtures = {
+  "missing checks" => ["{}", "0"],
+  "string checks" => ['{"checks":"oops"}', "0"],
+  "numeric checks" => ['{"checks":1}', "0"],
+  "empty checks" => ['{"checks":[]}', "0"],
+  "malformed check" => ['{"checks":[{}]}', "0"],
+  "one configured check" => ['{"checks":[{"context":"lint","app_id":1}]}', "1"],
+  "mixed checks" => ['{"checks":[{}, {"context":""}, {"context":"test"}]}', "1"],
+}.freeze
+
+classic_fixtures.each do |name, (payload, expected)|
+  output, status = Open3.capture2e("jq", "-r", classic_check_filter, stdin_data: payload)
+  abort "Classic fixture #{name} failed: #{output}" unless status.success? && output.strip == expected
+end
+
 puts "i18n pipeline authentication boundary: PASS"
