@@ -88,13 +88,11 @@ on:
       I18N_PIPELINE_TOKEN:
         description: >-
           Fine-grained PAT (Contents RW + Pull requests RW on the consumer
-          repos) used to author/push the i18n PR so its `on: pull_request` CI
-          fires, and to arm auto-merge (CEL-1259 steps 2-3). Optional —
-          callers on `secrets: inherit` forward it automatically once the org
-          secret exists; explicit-map callers must forward it by name. Absent,
-          the pipeline falls back to github.token (PR opens, CI parked, no
-          auto-merge).
-        required: false
+          repos) used to push the generated branch and create its PR through
+          REST so `on: pull_request` CI fires. Callers on `secrets: inherit`
+          forward the organization secret automatically; explicit-map callers
+          must forward it by name.
+        required: true
 
 jobs:
   sync-translate:
@@ -269,27 +267,28 @@ jobs:
         id: create_pr
         if: steps.diff.outputs.changed == 'true'
         env:
-          # CEL-1259 step 2/3 — prefer the org's I18N_PIPELINE_TOKEN (fine-
-          # grained PAT forwarded via `secrets: inherit`, the CEL-361 caller
-          # contract). PRs authored (and branches pushed) with github.token
-          # never trigger `on: pull_request`, so their CI parks at
-          # action_required forever. Falls back to github.token so the
-          # pipeline keeps working (with parked CI) until the secret exists.
-          GH_TOKEN: ${{ secrets.I18N_PIPELINE_TOKEN || github.token }}
+          # CEL-1259 step 2/3 — the organization PAT is the sole credential for
+          # branch push and REST PR creation. github.token-authored PRs never
+          # trigger `on: pull_request`, so falling back would park CI at
+          # action_required forever.
+          GH_TOKEN: ${{ secrets.I18N_PIPELINE_TOKEN }}
           LOCALES_PATH: ${{ inputs.locales_path }}
         run: |
           set -euo pipefail
           BRANCH="chore/i18n-pipeline-$(date +%Y%m%d-%H%M%S)"
+          GIT_CREDENTIAL_FILE="$RUNNER_TEMP/i18n-git-credentials"
+          trap 'rm -f "$GIT_CREDENTIAL_FILE"' EXIT
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git checkout -b "$BRANCH"
           git add "$LOCALES_PATH/" .polyglot-cache.json src/ || true
           git commit -m "chore(i18n): sync + translate"
-          # Checkout persists no credentials, so this URL's GH_TOKEN is the
-          # only credential available to the push. The branch and PR therefore
-          # share one author identity, which lets `on: pull_request` CI fire
-          # when the PAT is configured.
-          git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$BRANCH"
+          # Keep the PAT out of process arguments. The ephemeral credential
+          # file is runner-local, mode 0600, and removed by the EXIT trap.
+          printf 'https://x-access-token:%s@github.com\n' "$GH_TOKEN" > "$GIT_CREDENTIAL_FILE"
+          chmod 600 "$GIT_CREDENTIAL_FILE"
+          git config --local credential.helper "store --file=$GIT_CREDENTIAL_FILE"
+          git push "https://github.com/${GITHUB_REPOSITORY}.git" "$BRANCH"
           cat > "$RUNNER_TEMP/i18n-pr-body.md" <<'PR_BODY_EOF'
           Automated i18n pipeline: synced locale files, translated via Gemini, regenerated types.
 
@@ -389,28 +388,19 @@ jobs:
       # CEL-1259 step 3/3 — flip auto-merge on the fresh PR so it lands the
       # moment its required checks go green. Only meaningful when the PR was
       # authored with I18N_PIPELINE_TOKEN (step 2): a github.token PR never
-      # gets CI, so auto-merge would either wait forever or — worse, on a repo
-      # with no required checks — merge translations with zero gates. The
-      # in-script guard therefore skips silently until the secret exists.
+      # gets CI, so the reusable workflow requires the PAT at launch.
       # `allow_auto_merge` is enabled on all three consumer repos (2026-08-27).
       - name: Enable auto-merge on the new PR
         if: success() && steps.diff.outputs.changed == 'true' && steps.create_pr.outputs.pr_number != ''
         continue-on-error: true
         env:
-          # The call uses github.token because auto-merge is a GraphQL mutation;
-          # the PAT contract stops at git push and REST PR creation.
-          # PAT_CONFIGURED prevents auto-merge for a github.token-authored PR,
-          # which gets no CI, so arming auto-merge on one
-          # would either hang forever or (no required checks) merge ungated.
+          # The auto-merge step uses github.token for branch-rule REST probes
+          # and the GraphQL mutation. The PAT contract stops at branch push and
+          # REST PR creation.
           GH_TOKEN: ${{ github.token }}
-          PAT_CONFIGURED: ${{ secrets.I18N_PIPELINE_TOKEN != '' }}
           NEW_PR_NUMBER: ${{ steps.create_pr.outputs.pr_number }}
         run: |
           set -u
-          if [ "${PAT_CONFIGURED}" != "true" ]; then
-            echo "I18N_PIPELINE_TOKEN not configured — skipping auto-merge (CEL-1259 step 2 pending)."
-            exit 0
-          fi
           # Refuse to arm auto-merge unless the base branch has required
           # status checks. With none, GitHub either rejects the mutation (the
           # PR is immediately mergeable) or — in the brief window while
