@@ -211,6 +211,10 @@ jobs:
             echo "::error::Target language code must not be empty"
             exit 1
           fi
+          if [[ "$TARGET_LANGUAGES" == *$'\n'* || "$TARGET_LANGUAGES" == *$'\r'* ]]; then
+            echo "::error::Target language code must not contain line breaks"
+            exit 1
+          fi
           if [[ "$TARGET_LANGUAGES" == *, ]]; then
             echo "::error::Target language code must not be empty"
             exit 1

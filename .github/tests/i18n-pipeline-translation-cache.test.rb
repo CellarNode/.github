@@ -62,9 +62,19 @@ def run_translation(script, target_languages)
   end
 end
 
-["", " ", ",sv", "sv,", "sv,,de", "sv, ,de"].each do |target_languages|
+invalid_languages = {
+  "" => "Target language code must not be empty",
+  " " => "Target language code must not be empty",
+  ",sv" => "Target language code must not be empty",
+  "sv," => "Target language code must not be empty",
+  "sv,,de" => "Target language code must not be empty",
+  "sv, ,de" => "Target language code must not be empty",
+  "sv\nde" => "Target language code must not contain line breaks",
+}.freeze
+
+invalid_languages.each do |target_languages, expected_error|
   output, status, calls, = run_translation(script, target_languages)
-  abort "Invalid languages #{target_languages.inspect} must fail with validation" if status.success? || !output.include?("Target language code must not be empty")
+  abort "Invalid languages #{target_languages.inspect} must fail with validation" if status.success? || !output.include?(expected_error)
   abort "Invalid languages #{target_languages.inspect} must fail before translation" unless calls.empty?
 end
 
