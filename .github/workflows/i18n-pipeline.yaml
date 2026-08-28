@@ -366,12 +366,18 @@ jobs:
           # proved why checkout credentials must be disabled: github.token
           # authenticated the push while a shadowed stale PAT failed this REST
           # call with HTTP 401.
-          PR_NUMBER=$(gh api "repos/${GITHUB_REPOSITORY}/pulls" \
+          if ! PR_NUMBER=$(gh api "repos/${GITHUB_REPOSITORY}/pulls" \
             -f title="chore(i18n): sync + translate" \
             -F body=@"$RUNNER_TEMP/i18n-pr-body.md" \
             -f base="${GITHUB_REF_NAME}" \
             -f head="$BRANCH" \
-            --jq '.number')
+            --jq '.number'); then
+            echo "::error::PR creation failed; deleting pushed branch $BRANCH"
+            if ! gh api --method DELETE "repos/${GITHUB_REPOSITORY}/git/refs/heads/$BRANCH" >/dev/null; then
+              echo "::warning::Could not delete orphan branch $BRANCH after PR creation failed; remove it manually."
+            fi
+            exit 1
+          fi
           echo "Opened PR #$PR_NUMBER"
           case "$PR_NUMBER" in
             ''|*[!0-9]*)

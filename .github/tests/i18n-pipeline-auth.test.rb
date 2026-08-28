@@ -1,4 +1,5 @@
 require "open3"
+require "tmpdir"
 require "yaml"
 
 workflow_path = File.expand_path("../workflows/i18n-pipeline.yaml", __dir__)
@@ -33,6 +34,46 @@ cleanup_index = script.index("cleanup_git_credentials\n", push_index)
 clear_trap_index = script.index("trap - EXIT", push_index)
 abort "Credentials must be cleaned immediately after push" unless cleanup_index && cleanup_index > push_index
 abort "Credential cleanup trap must be cleared after success" unless clear_trap_index && clear_trap_index > cleanup_index
+
+Dir.mktmpdir("i18n-pr-rollback-test") do |workdir|
+  bin_dir = File.join(workdir, "bin")
+  Dir.mkdir(bin_dir)
+  gh_log = File.join(workdir, "gh.log")
+  git_log = File.join(workdir, "git.log")
+
+  git_path = File.join(bin_dir, "git")
+  File.write(git_path, <<~'BASH')
+    #!/usr/bin/env bash
+    printf 'git %s\n' "$*" >> "$GIT_CALL_LOG"
+  BASH
+  File.chmod(0o755, git_path)
+
+  gh_path = File.join(bin_dir, "gh")
+  File.write(gh_path, <<~'BASH')
+    #!/usr/bin/env bash
+    printf 'gh %s\n' "$*" >> "$GH_CALL_LOG"
+    if [[ "$*" == *"repos/CellarNode/test/pulls"* ]]; then
+      exit 1
+    fi
+  BASH
+  File.chmod(0o755, gh_path)
+
+  env = {
+    "GH_CALL_LOG" => gh_log,
+    "GH_TOKEN" => "test-token",
+    "GITHUB_OUTPUT" => File.join(workdir, "github-output"),
+    "GITHUB_REF_NAME" => "main",
+    "GITHUB_REPOSITORY" => "CellarNode/test",
+    "GIT_CALL_LOG" => git_log,
+    "LOCALES_PATH" => "public/locales",
+    "PATH" => "#{bin_dir}:#{ENV.fetch("PATH")}",
+    "RUNNER_TEMP" => workdir,
+  }
+  _stdout, _stderr, status = Open3.capture3(env, "bash", "-c", script, chdir: workdir)
+  gh_calls = File.exist?(gh_log) ? File.read(gh_log) : ""
+  abort "PR creation failure must fail the step" if status.success?
+  abort "PR creation failure must delete the pushed branch" unless gh_calls.include?("--method DELETE repos/CellarNode/test/git/refs/heads/chore/i18n-pipeline-")
+end
 
 auto_merge = steps.find { |step| step.fetch("name", "") == "Enable auto-merge on the new PR" }
 auto_merge_script = auto_merge.fetch("run")
