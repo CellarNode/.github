@@ -126,6 +126,11 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Create PR must authenticate both its push and REST call with the
+          # same token. Otherwise checkout's persisted github.token can make
+          # the push succeed while a stale PAT fails seconds later.
+          persist-credentials: false
 
       # CEL-384 prong 1b: catch the most-common failure mode — caller did not
       # forward NPM_TOKEN but the repo has private @cellarnode/* deps — and
@@ -280,9 +285,10 @@ jobs:
           git checkout -b "$BRANCH"
           git add "$LOCALES_PATH/" .polyglot-cache.json src/ || true
           git commit -m "chore(i18n): sync + translate"
-          # Push with GH_TOKEN (not the checkout-persisted github.token) so the
-          # branch and the PR share the same author identity — required for the
-          # PR's `on: pull_request` CI to fire when the PAT is configured.
+          # Checkout persists no credentials, so this URL's GH_TOKEN is the
+          # only credential available to the push. The branch and PR therefore
+          # share one author identity, which lets `on: pull_request` CI fire
+          # when the PAT is configured.
           git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$BRANCH"
           cat > "$RUNNER_TEMP/i18n-pr-body.md" <<'PR_BODY_EOF'
           Automated i18n pipeline: synced locale files, translated via Gemini, regenerated types.
@@ -294,12 +300,11 @@ jobs:
           backlog would trip GitHub's secondary rate limit on content creation, so
           the supersession notice lives here instead.
           PR_BODY_EOF
-          # REST, not `gh pr create`: fine-grained PATs cannot authenticate
-          # against api.github.com/graphql (observed live: HTTP 401 "Bad
-          # credentials (https://api.github.com/graphql)" from a valid PAT
-          # whose git push succeeded seconds earlier, run 33106558320).
-          # `gh pr create` touches GraphQL; `gh api` POST /pulls is pure REST
-          # and works with fine-grained PATs.
+          # REST, not `gh pr create`: this keeps the token contract limited to
+          # repository Contents and Pull requests permissions. Run 33157661915
+          # proved why checkout credentials must be disabled: github.token
+          # authenticated the push while a shadowed stale PAT failed this REST
+          # call with HTTP 401.
           PR_NUMBER=$(gh api "repos/${GITHUB_REPOSITORY}/pulls" \
             -f title="chore(i18n): sync + translate" \
             -F body=@"$RUNNER_TEMP/i18n-pr-body.md" \
@@ -392,13 +397,10 @@ jobs:
         if: success() && steps.diff.outputs.changed == 'true' && steps.create_pr.outputs.pr_number != ''
         continue-on-error: true
         env:
-          # The CALL uses github.token, not the PAT: `gh pr merge --auto` is a
-          # GraphQL mutation (enablePullRequestAutoMerge) and fine-grained PATs
-          # cannot authenticate against the GraphQL API (the same 401 that
-          # broke `gh pr create`, run 33106558320). github.token is
-          # GraphQL-capable and enabling auto-merge on someone else's PR only
-          # needs repo write. PAT_CONFIGURED still gates the step: a
-          # github.token-AUTHORED PR gets no CI, so arming auto-merge on one
+          # The call uses github.token because auto-merge is a GraphQL mutation;
+          # the PAT contract stops at git push and REST PR creation.
+          # PAT_CONFIGURED prevents auto-merge for a github.token-authored PR,
+          # which gets no CI, so arming auto-merge on one
           # would either hang forever or (no required checks) merge ungated.
           GH_TOKEN: ${{ github.token }}
           PAT_CONFIGURED: ${{ secrets.I18N_PIPELINE_TOKEN != '' }}
