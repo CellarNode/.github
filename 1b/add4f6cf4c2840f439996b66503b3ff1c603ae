@@ -1,0 +1,22 @@
+.github/workflows/deploy-static-website.yaml
+  s_e494ddb2690bdf::t_508d075712bfc8 292-301,304,310,312-320,323,329,331,335,339,363-367,373
+  s_e494ddb2690bdf::t_6a72537037da0d 302-303,305-309,311,321-322,324-328,330
+.github/tests/deploy-static-lock-validator.test.rb
+  s_e494ddb2690bdf::t_6fb4902c109d17 227-235,254-280
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.0",
+  "base_commit_sha": "1badd4f6cf4c2840f439996b66503b3ff1c603ae",
+  "prompts": {},
+  "sessions": {
+    "s_e494ddb2690bdf": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0333d-6bf6-78b1-91b9-1f7413f8c7de",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "github-actions[bot] <github-actions[bot]@users.noreply.github.com>"
+    }
+  }
+}
