@@ -181,6 +181,12 @@ jobs:
             peerDependencies
             resolutions
           ].freeze
+          direct_dependency_sections = %w[
+            dependencies
+            devDependencies
+            optionalDependencies
+            peerDependencies
+          ].freeze
           protocol_dependency_source = /\A[a-z][a-z0-9+.-]*:/i
           path_or_archive_dependency_source = /[\\\/]|\.(?:tgz|tar(?:\.gz)?)\z/i
           canonical_private_packages = %w[
@@ -224,7 +230,7 @@ jobs:
                   alias_name = "@cellarnode/#{package.downcase}"
                   allowed_frozen_alias_key = frozen_registry_aliases.key?(alias_name) &&
                     child_keys.length == 2 &&
-                    dependency_sections.include?(child_keys.first) &&
+                    direct_dependency_sections.include?(child_keys.first) &&
                     child_keys.last == alias_name
                   failures << "#{path}:#{child_keys.join('.')}" unless canonical_private_packages.include?(package.downcase) || allowed_frozen_alias_key
                 end

@@ -233,6 +233,15 @@ fixtures = {
             specifier: npm:@cellarnode/ui@9.9.9
             version: '@cellarnode/ui@9.9.9'
   YAML
+  "frozen 0.155 renderer alias with wrong resolved version" => [<<~YAML, false],
+    lockfileVersion: '9.0'
+    importers:
+      .:
+        dependencies:
+          '@cellarnode/ui-renderer-0-155':
+            specifier: npm:@cellarnode/ui@0.155.1
+            version: '@cellarnode/ui@9.9.9'
+  YAML
   "frozen 0.155 renderer alias with wrong target" => [<<~YAML, false],
     lockfileVersion: '9.0'
     importers:
@@ -382,6 +391,62 @@ manifest_fixtures = {
               }
             }
           }
+        }
+      }
+    JSON
+  ],
+  "frozen 0.155 renderer alias in root override" => [
+    "unused",
+    "unused",
+    false,
+    nil,
+    <<~JSON,
+      {
+        "dependencies": { "public-package": "1.0.0" },
+        "overrides": {
+          "@cellarnode/ui-renderer-0-155": "npm:@cellarnode/ui@0.155.1"
+        }
+      }
+    JSON
+  ],
+  "frozen 0.155 renderer alias in root package extension" => [
+    "unused",
+    "unused",
+    false,
+    nil,
+    <<~JSON,
+      {
+        "dependencies": { "public-package": "1.0.0" },
+        "packageExtensions": {
+          "@cellarnode/ui-renderer-0-155": "npm:@cellarnode/ui@0.155.1"
+        }
+      }
+    JSON
+  ],
+  "frozen 0.155 renderer alias in root resolution" => [
+    "unused",
+    "unused",
+    false,
+    nil,
+    <<~JSON,
+      {
+        "dependencies": { "public-package": "1.0.0" },
+        "resolutions": {
+          "@cellarnode/ui-renderer-0-155": "npm:@cellarnode/ui@0.155.1"
+        }
+      }
+    JSON
+  ],
+  "frozen 0.155 renderer alias in root catalog" => [
+    "unused",
+    "unused",
+    false,
+    nil,
+    <<~JSON,
+      {
+        "dependencies": { "public-package": "1.0.0" },
+        "catalog": {
+          "@cellarnode/ui-renderer-0-155": "npm:@cellarnode/ui@0.155.1"
         }
       }
     JSON
