@@ -223,11 +223,11 @@ jobs:
                 key.to_s.scan(private_package).flatten.each do |package|
                   alias_name = "@cellarnode/#{package.downcase}"
                   allowed_frozen_alias_key = frozen_registry_aliases.key?(alias_name) &&
-                    child_keys.any? { |part| dependency_sections.include?(part) } &&
-                    child_keys.last.downcase == alias_name
+                    dependency_sections.include?(child_keys[-2]) &&
+                    child_keys.last == alias_name
                   failures << "#{path}:#{child_keys.join('.')}" unless canonical_private_packages.include?(package.downcase) || allowed_frozen_alias_key
                 end
-                expected_alias = frozen_registry_aliases[key.to_s.downcase]
+                expected_alias = frozen_registry_aliases[key.to_s]
                 failures << "#{path}:#{child_keys.join('.')}" if expected_alias && child != expected_alias
                 visit.call(child, path, child_keys)
               end
@@ -299,7 +299,7 @@ jobs:
               allowed_frozen_alias_key = frozen_registry_aliases.key?(alias_name) &&
                 keys.first == "importers" &&
                 dependency_sections.include?(keys[-2]) &&
-                keys.last.downcase == alias_name
+                keys.last == alias_name
               failures << keys.join(".") unless canonical_private_packages.include?(package.downcase) || allowed_frozen_alias_key
             end
           end
@@ -310,7 +310,7 @@ jobs:
                 name = key.to_s
                 child_keys = keys + [name]
                 validate_private_packages.call(name, child_keys)
-                expected_alias = frozen_registry_aliases[name.downcase]
+                expected_alias = frozen_registry_aliases[name]
                 if expected_alias
                   valid_alias = keys.first == "importers" &&
                     dependency_sections.include?(keys.last) &&

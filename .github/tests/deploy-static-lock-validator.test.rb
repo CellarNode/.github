@@ -193,6 +193,15 @@ fixtures = {
         resolution:
           integrity: sha512-safe
   YAML
+  "frozen 0.154 renderer alias" => [<<~YAML, true],
+    lockfileVersion: '9.0'
+    importers:
+      .:
+        dependencies:
+          '@cellarnode/ui-renderer-0-154':
+            specifier: npm:@cellarnode/ui@0.154.0
+            version: '@cellarnode/ui@0.154.0(react@19.1.1)'
+  YAML
   "frozen 0.155 renderer alias" => [<<~YAML, true],
     lockfileVersion: '9.0'
     importers:
@@ -200,7 +209,7 @@ fixtures = {
         dependencies:
           '@cellarnode/ui-renderer-0-155':
             specifier: npm:@cellarnode/ui@0.155.1
-            version: '@cellarnode/ui@0.155.1'
+            version: '@cellarnode/ui@0.155.1(react@19.1.1)'
     packages:
       '@cellarnode/ui@0.155.1':
         resolution:
@@ -304,6 +313,22 @@ manifest_fixtures = {
   "frozen 0.155 renderer alias with wrong target" => ["@cellarnode/ui-renderer-0-155", "npm:@cellarnode/auth@1.0.0", false],
   "frozen 0.155 renderer alias with plain version" => ["@cellarnode/ui-renderer-0-155", "1.0.0", false],
   "nested frozen 0.155 renderer alias" => ["@cellarnode/ui", "npm:@cellarnode/ui-renderer-0-155@1.0.0", false],
+  "case-variant frozen 0.155 renderer alias" => ["@cellarnode/UI-renderer-0-155", "npm:@cellarnode/ui@0.155.1", false],
+  "nested frozen 0.155 renderer alias key" => [
+    "unused",
+    "unused",
+    false,
+    nil,
+    <<~JSON,
+      {
+        "dependencies": {
+          "wrapper": {
+            "@cellarnode/ui-renderer-0-155": "npm:@cellarnode/ui@0.155.1"
+          }
+        }
+      }
+    JSON
+  ],
   "frozen renderer alias to public target" => ["@cellarnode/ui-renderer-0-154", "npm:leftpad@1.0.0", false],
   "allowed alias with path traversal version" => ["@cellarnode/ui", "npm:@cellarnode/ui@0.154.0/../../evil", false],
   "allowed public registry range" => ["public-package", "^1.0.0", true],
@@ -394,11 +419,11 @@ manifest_fixtures = {
 }
 
 dependency_scripts.each do |job_name, (validation_script, non_frozen_script)|
-  manifest_fixtures.each do |name, (package, version, expected_install, workspace)|
+  manifest_fixtures.each do |name, (package, version, expected_install, workspace, manifest)|
     Dir.mktmpdir("cel1328-manifest-boundary") do |directory|
       File.write(
         File.join(directory, "package.json"),
-        <<~JSON,
+        manifest || <<~JSON,
           {
             "dependencies": {
               "#{package}": "#{version}"
