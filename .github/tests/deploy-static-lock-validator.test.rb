@@ -224,6 +224,15 @@ fixtures = {
         resolution:
           integrity: sha512-safe
   YAML
+  "frozen 0.155 renderer alias with hashed peer context" => [<<~YAML, true],
+    lockfileVersion: '9.0'
+    importers:
+      .:
+        dependencies:
+          '@cellarnode/ui-renderer-0-155':
+            specifier: npm:@cellarnode/ui@0.155.1
+            version: '@cellarnode/ui@0.155.1(e4ae7f10a11970144bc87c4d16ad3111)'
+  YAML
   "frozen 0.155 renderer alias with wrong version" => [<<~YAML, false],
     lockfileVersion: '9.0'
     importers:
@@ -241,6 +250,33 @@ fixtures = {
           '@cellarnode/ui-renderer-0-155':
             specifier: npm:@cellarnode/ui@0.155.1
             version: '@cellarnode/ui@9.9.9'
+  YAML
+  "frozen 0.155 renderer alias with protocol peer context" => [<<~YAML, false],
+    lockfileVersion: '9.0'
+    importers:
+      .:
+        dependencies:
+          '@cellarnode/ui-renderer-0-155':
+            specifier: npm:@cellarnode/ui@0.155.1
+            version: '@cellarnode/ui@0.155.1(file:../evil)'
+  YAML
+  "frozen 0.155 renderer alias with traversal peer context" => [<<~YAML, false],
+    lockfileVersion: '9.0'
+    importers:
+      .:
+        dependencies:
+          '@cellarnode/ui-renderer-0-155':
+            specifier: npm:@cellarnode/ui@0.155.1
+            version: '@cellarnode/ui@0.155.1(react@19.1.1/../../evil)'
+  YAML
+  "frozen 0.155 renderer alias with empty peer context" => [<<~YAML, false],
+    lockfileVersion: '9.0'
+    importers:
+      .:
+        dependencies:
+          '@cellarnode/ui-renderer-0-155':
+            specifier: npm:@cellarnode/ui@0.155.1
+            version: '@cellarnode/ui@0.155.1()'
   YAML
   "frozen 0.155 renderer alias with wrong target" => [<<~YAML, false],
     lockfileVersion: '9.0'
