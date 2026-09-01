@@ -202,6 +202,15 @@ fixtures = {
             specifier: npm:@cellarnode/ui@0.154.0
             version: '@cellarnode/ui@0.154.0(react@19.1.1)'
   YAML
+  "frozen 0.154 renderer alias with wrong version" => [<<~YAML, false],
+    lockfileVersion: '9.0'
+    importers:
+      .:
+        dependencies:
+          '@cellarnode/ui-renderer-0-154':
+            specifier: npm:@cellarnode/ui@0.154.1
+            version: '@cellarnode/ui@0.154.1'
+  YAML
   "frozen 0.155 renderer alias" => [<<~YAML, true],
     lockfileVersion: '9.0'
     importers:
@@ -240,6 +249,17 @@ fixtures = {
       '@cellarnode/ui-renderer-0-155@1.0.0':
         resolution:
           integrity: sha512-safe
+  YAML
+  "nested frozen 0.155 renderer lock alias key" => [<<~YAML, false],
+    lockfileVersion: '9.0'
+    importers:
+      .:
+        dependencies:
+          wrapper:
+            dependencies:
+              '@cellarnode/ui-renderer-0-155':
+                specifier: npm:@cellarnode/ui@0.155.1
+                version: '@cellarnode/ui@0.155.1'
   YAML
   "unknown private package" => [<<~YAML, false],
     lockfileVersion: '9.0'
@@ -308,6 +328,7 @@ manifest_fixtures = {
   "aliased unknown private manifest package" => ["hidden-package", "npm:@cellarnode/internal-secrets@1.0.0", false],
   "allowed private manifest package" => ["@cellarnode/ui", "1.0.0", true],
   "frozen renderer registry alias" => ["@cellarnode/ui-renderer-0-154", "npm:@cellarnode/ui@0.154.0", true],
+  "frozen 0.154 renderer alias with wrong version" => ["@cellarnode/ui-renderer-0-154", "npm:@cellarnode/ui@0.154.1", false],
   "frozen 0.155 renderer registry alias" => ["@cellarnode/ui-renderer-0-155", "npm:@cellarnode/ui@0.155.1", true],
   "frozen 0.155 renderer alias with wrong version" => ["@cellarnode/ui-renderer-0-155", "npm:@cellarnode/ui@9.9.9", false],
   "frozen 0.155 renderer alias with wrong target" => ["@cellarnode/ui-renderer-0-155", "npm:@cellarnode/auth@1.0.0", false],
@@ -324,6 +345,42 @@ manifest_fixtures = {
         "dependencies": {
           "wrapper": {
             "@cellarnode/ui-renderer-0-155": "npm:@cellarnode/ui@0.155.1"
+          }
+        }
+      }
+    JSON
+  ],
+  "frozen 0.155 renderer alias in pnpm overrides" => [
+    "unused",
+    "unused",
+    false,
+    nil,
+    <<~JSON,
+      {
+        "dependencies": { "public-package": "1.0.0" },
+        "pnpm": {
+          "overrides": {
+            "@cellarnode/ui-renderer-0-155": "npm:@cellarnode/ui@0.155.1"
+          }
+        }
+      }
+    JSON
+  ],
+  "frozen 0.155 renderer alias in package extension" => [
+    "unused",
+    "unused",
+    false,
+    nil,
+    <<~JSON,
+      {
+        "dependencies": { "public-package": "1.0.0" },
+        "pnpm": {
+          "packageExtensions": {
+            "public-package@1.0.0": {
+              "dependencies": {
+                "@cellarnode/ui-renderer-0-155": "npm:@cellarnode/ui@0.155.1"
+              }
+            }
           }
         }
       }

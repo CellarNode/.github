@@ -223,7 +223,8 @@ jobs:
                 key.to_s.scan(private_package).flatten.each do |package|
                   alias_name = "@cellarnode/#{package.downcase}"
                   allowed_frozen_alias_key = frozen_registry_aliases.key?(alias_name) &&
-                    dependency_sections.include?(child_keys[-2]) &&
+                    child_keys.length == 2 &&
+                    dependency_sections.include?(child_keys.first) &&
                     child_keys.last == alias_name
                   failures << "#{path}:#{child_keys.join('.')}" unless canonical_private_packages.include?(package.downcase) || allowed_frozen_alias_key
                 end
@@ -297,9 +298,10 @@ jobs:
             text.to_s.scan(private_package).flatten.each do |package|
               alias_name = "@cellarnode/#{package.downcase}"
               allowed_frozen_alias_key = frozen_registry_aliases.key?(alias_name) &&
-                keys.first == "importers" &&
-                dependency_sections.include?(keys[-2]) &&
-                keys.last == alias_name
+                keys.length == 4 &&
+                keys[0] == "importers" &&
+                dependency_sections.include?(keys[2]) &&
+                keys[3] == alias_name
               failures << keys.join(".") unless canonical_private_packages.include?(package.downcase) || allowed_frozen_alias_key
             end
           end
@@ -312,8 +314,9 @@ jobs:
                 validate_private_packages.call(name, child_keys)
                 expected_alias = frozen_registry_aliases[name]
                 if expected_alias
-                  valid_alias = keys.first == "importers" &&
-                    dependency_sections.include?(keys.last) &&
+                  valid_alias = keys.length == 3 &&
+                    keys[0] == "importers" &&
+                    dependency_sections.include?(keys[2]) &&
                     child.is_a?(Hash) &&
                     child["specifier"] == expected_alias.fetch("specifier") &&
                     child["version"].is_a?(String) &&
