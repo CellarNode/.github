@@ -193,6 +193,119 @@ fixtures = {
         resolution:
           integrity: sha512-safe
   YAML
+  "frozen 0.154 renderer alias" => [<<~YAML, true],
+    lockfileVersion: '9.0'
+    importers:
+      .:
+        dependencies:
+          '@cellarnode/ui-renderer-0-154':
+            specifier: npm:@cellarnode/ui@0.154.0
+            version: '@cellarnode/ui@0.154.0(react@19.1.1)'
+  YAML
+  "frozen 0.154 renderer alias with wrong version" => [<<~YAML, false],
+    lockfileVersion: '9.0'
+    importers:
+      .:
+        dependencies:
+          '@cellarnode/ui-renderer-0-154':
+            specifier: npm:@cellarnode/ui@0.154.1
+            version: '@cellarnode/ui@0.154.1'
+  YAML
+  "frozen 0.155 renderer alias" => [<<~YAML, true],
+    lockfileVersion: '9.0'
+    importers:
+      .:
+        dependencies:
+          '@cellarnode/ui-renderer-0-155':
+            specifier: npm:@cellarnode/ui@0.155.1
+            version: '@cellarnode/ui@0.155.1(react@19.1.1)'
+    packages:
+      '@cellarnode/ui@0.155.1':
+        resolution:
+          integrity: sha512-safe
+  YAML
+  "frozen 0.155 renderer alias with hashed peer context" => [<<~YAML, true],
+    lockfileVersion: '9.0'
+    importers:
+      .:
+        dependencies:
+          '@cellarnode/ui-renderer-0-155':
+            specifier: npm:@cellarnode/ui@0.155.1
+            version: '@cellarnode/ui@0.155.1(e4ae7f10a11970144bc87c4d16ad3111)'
+  YAML
+  "frozen 0.155 renderer alias with wrong version" => [<<~YAML, false],
+    lockfileVersion: '9.0'
+    importers:
+      .:
+        dependencies:
+          '@cellarnode/ui-renderer-0-155':
+            specifier: npm:@cellarnode/ui@9.9.9
+            version: '@cellarnode/ui@9.9.9'
+  YAML
+  "frozen 0.155 renderer alias with wrong resolved version" => [<<~YAML, false],
+    lockfileVersion: '9.0'
+    importers:
+      .:
+        dependencies:
+          '@cellarnode/ui-renderer-0-155':
+            specifier: npm:@cellarnode/ui@0.155.1
+            version: '@cellarnode/ui@9.9.9'
+  YAML
+  "frozen 0.155 renderer alias with protocol peer context" => [<<~YAML, false],
+    lockfileVersion: '9.0'
+    importers:
+      .:
+        dependencies:
+          '@cellarnode/ui-renderer-0-155':
+            specifier: npm:@cellarnode/ui@0.155.1
+            version: '@cellarnode/ui@0.155.1(file:../evil)'
+  YAML
+  "frozen 0.155 renderer alias with traversal peer context" => [<<~YAML, false],
+    lockfileVersion: '9.0'
+    importers:
+      .:
+        dependencies:
+          '@cellarnode/ui-renderer-0-155':
+            specifier: npm:@cellarnode/ui@0.155.1
+            version: '@cellarnode/ui@0.155.1(react@19.1.1/../../evil)'
+  YAML
+  "frozen 0.155 renderer alias with empty peer context" => [<<~YAML, false],
+    lockfileVersion: '9.0'
+    importers:
+      .:
+        dependencies:
+          '@cellarnode/ui-renderer-0-155':
+            specifier: npm:@cellarnode/ui@0.155.1
+            version: '@cellarnode/ui@0.155.1()'
+  YAML
+  "frozen 0.155 renderer alias with wrong target" => [<<~YAML, false],
+    lockfileVersion: '9.0'
+    importers:
+      .:
+        dependencies:
+          '@cellarnode/ui-renderer-0-155':
+            specifier: npm:@cellarnode/auth@1.0.0
+            version: '@cellarnode/auth@1.0.0'
+  YAML
+  "frozen 0.155 renderer as direct lock package" => [<<~YAML, false],
+    lockfileVersion: '9.0'
+    importers: {}
+    packages:
+      '@cellarnode/ui-renderer-0-155@1.0.0':
+        resolution:
+          integrity: sha512-safe
+  YAML
+  "nested frozen 0.155 renderer lock alias key" => [<<~YAML, false],
+    lockfileVersion: '9.0'
+    importers:
+      .:
+        dependencies:
+          wrapper:
+            dependencies:
+              '@cellarnode/ui-renderer-0-155':
+                specifier: npm:@cellarnode/ui@0.155.1
+                version: '@cellarnode/ui@0.155.1'
+  YAML
   "unknown private package" => [<<~YAML, false],
     lockfileVersion: '9.0'
     importers: {}
@@ -260,6 +373,120 @@ manifest_fixtures = {
   "aliased unknown private manifest package" => ["hidden-package", "npm:@cellarnode/internal-secrets@1.0.0", false],
   "allowed private manifest package" => ["@cellarnode/ui", "1.0.0", true],
   "frozen renderer registry alias" => ["@cellarnode/ui-renderer-0-154", "npm:@cellarnode/ui@0.154.0", true],
+  "frozen 0.154 renderer alias with wrong version" => ["@cellarnode/ui-renderer-0-154", "npm:@cellarnode/ui@0.154.1", false],
+  "frozen 0.155 renderer registry alias" => ["@cellarnode/ui-renderer-0-155", "npm:@cellarnode/ui@0.155.1", true],
+  "frozen 0.155 renderer alias with wrong version" => ["@cellarnode/ui-renderer-0-155", "npm:@cellarnode/ui@9.9.9", false],
+  "frozen 0.155 renderer alias with wrong target" => ["@cellarnode/ui-renderer-0-155", "npm:@cellarnode/auth@1.0.0", false],
+  "frozen 0.155 renderer alias with plain version" => ["@cellarnode/ui-renderer-0-155", "1.0.0", false],
+  "nested frozen 0.155 renderer alias" => ["@cellarnode/ui", "npm:@cellarnode/ui-renderer-0-155@1.0.0", false],
+  "case-variant frozen 0.155 renderer alias" => ["@cellarnode/UI-renderer-0-155", "npm:@cellarnode/ui@0.155.1", false],
+  "nested frozen 0.155 renderer alias key" => [
+    "unused",
+    "unused",
+    false,
+    nil,
+    <<~JSON,
+      {
+        "dependencies": {
+          "wrapper": {
+            "@cellarnode/ui-renderer-0-155": "npm:@cellarnode/ui@0.155.1"
+          }
+        }
+      }
+    JSON
+  ],
+  "frozen 0.155 renderer alias in pnpm overrides" => [
+    "unused",
+    "unused",
+    false,
+    nil,
+    <<~JSON,
+      {
+        "dependencies": { "public-package": "1.0.0" },
+        "pnpm": {
+          "overrides": {
+            "@cellarnode/ui-renderer-0-155": "npm:@cellarnode/ui@0.155.1"
+          }
+        }
+      }
+    JSON
+  ],
+  "frozen 0.155 renderer alias in package extension" => [
+    "unused",
+    "unused",
+    false,
+    nil,
+    <<~JSON,
+      {
+        "dependencies": { "public-package": "1.0.0" },
+        "pnpm": {
+          "packageExtensions": {
+            "public-package@1.0.0": {
+              "dependencies": {
+                "@cellarnode/ui-renderer-0-155": "npm:@cellarnode/ui@0.155.1"
+              }
+            }
+          }
+        }
+      }
+    JSON
+  ],
+  "frozen 0.155 renderer alias in root override" => [
+    "unused",
+    "unused",
+    false,
+    nil,
+    <<~JSON,
+      {
+        "dependencies": { "public-package": "1.0.0" },
+        "overrides": {
+          "@cellarnode/ui-renderer-0-155": "npm:@cellarnode/ui@0.155.1"
+        }
+      }
+    JSON
+  ],
+  "frozen 0.155 renderer alias in root package extension" => [
+    "unused",
+    "unused",
+    false,
+    nil,
+    <<~JSON,
+      {
+        "dependencies": { "public-package": "1.0.0" },
+        "packageExtensions": {
+          "@cellarnode/ui-renderer-0-155": "npm:@cellarnode/ui@0.155.1"
+        }
+      }
+    JSON
+  ],
+  "frozen 0.155 renderer alias in root resolution" => [
+    "unused",
+    "unused",
+    false,
+    nil,
+    <<~JSON,
+      {
+        "dependencies": { "public-package": "1.0.0" },
+        "resolutions": {
+          "@cellarnode/ui-renderer-0-155": "npm:@cellarnode/ui@0.155.1"
+        }
+      }
+    JSON
+  ],
+  "frozen 0.155 renderer alias in root catalog" => [
+    "unused",
+    "unused",
+    false,
+    nil,
+    <<~JSON,
+      {
+        "dependencies": { "public-package": "1.0.0" },
+        "catalog": {
+          "@cellarnode/ui-renderer-0-155": "npm:@cellarnode/ui@0.155.1"
+        }
+      }
+    JSON
+  ],
   "frozen renderer alias to public target" => ["@cellarnode/ui-renderer-0-154", "npm:leftpad@1.0.0", false],
   "allowed alias with path traversal version" => ["@cellarnode/ui", "npm:@cellarnode/ui@0.154.0/../../evil", false],
   "allowed public registry range" => ["public-package", "^1.0.0", true],
@@ -350,11 +577,11 @@ manifest_fixtures = {
 }
 
 dependency_scripts.each do |job_name, (validation_script, non_frozen_script)|
-  manifest_fixtures.each do |name, (package, version, expected_install, workspace)|
+  manifest_fixtures.each do |name, (package, version, expected_install, workspace, manifest)|
     Dir.mktmpdir("cel1328-manifest-boundary") do |directory|
       File.write(
         File.join(directory, "package.json"),
-        <<~JSON,
+        manifest || <<~JSON,
           {
             "dependencies": {
               "#{package}": "#{version}"
