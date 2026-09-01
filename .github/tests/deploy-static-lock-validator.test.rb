@@ -206,6 +206,32 @@ fixtures = {
         resolution:
           integrity: sha512-safe
   YAML
+  "frozen 0.155 renderer alias with wrong version" => [<<~YAML, false],
+    lockfileVersion: '9.0'
+    importers:
+      .:
+        dependencies:
+          '@cellarnode/ui-renderer-0-155':
+            specifier: npm:@cellarnode/ui@9.9.9
+            version: '@cellarnode/ui@9.9.9'
+  YAML
+  "frozen 0.155 renderer alias with wrong target" => [<<~YAML, false],
+    lockfileVersion: '9.0'
+    importers:
+      .:
+        dependencies:
+          '@cellarnode/ui-renderer-0-155':
+            specifier: npm:@cellarnode/auth@1.0.0
+            version: '@cellarnode/auth@1.0.0'
+  YAML
+  "frozen 0.155 renderer as direct lock package" => [<<~YAML, false],
+    lockfileVersion: '9.0'
+    importers: {}
+    packages:
+      '@cellarnode/ui-renderer-0-155@1.0.0':
+        resolution:
+          integrity: sha512-safe
+  YAML
   "unknown private package" => [<<~YAML, false],
     lockfileVersion: '9.0'
     importers: {}
@@ -274,6 +300,10 @@ manifest_fixtures = {
   "allowed private manifest package" => ["@cellarnode/ui", "1.0.0", true],
   "frozen renderer registry alias" => ["@cellarnode/ui-renderer-0-154", "npm:@cellarnode/ui@0.154.0", true],
   "frozen 0.155 renderer registry alias" => ["@cellarnode/ui-renderer-0-155", "npm:@cellarnode/ui@0.155.1", true],
+  "frozen 0.155 renderer alias with wrong version" => ["@cellarnode/ui-renderer-0-155", "npm:@cellarnode/ui@9.9.9", false],
+  "frozen 0.155 renderer alias with wrong target" => ["@cellarnode/ui-renderer-0-155", "npm:@cellarnode/auth@1.0.0", false],
+  "frozen 0.155 renderer alias with plain version" => ["@cellarnode/ui-renderer-0-155", "1.0.0", false],
+  "nested frozen 0.155 renderer alias" => ["@cellarnode/ui", "npm:@cellarnode/ui-renderer-0-155@1.0.0", false],
   "frozen renderer alias to public target" => ["@cellarnode/ui-renderer-0-154", "npm:leftpad@1.0.0", false],
   "allowed alias with path traversal version" => ["@cellarnode/ui", "npm:@cellarnode/ui@0.154.0/../../evil", false],
   "allowed public registry range" => ["public-package", "^1.0.0", true],

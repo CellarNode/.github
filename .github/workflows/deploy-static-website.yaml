@@ -183,22 +183,24 @@ jobs:
           ].freeze
           protocol_dependency_source = /\A[a-z][a-z0-9+.-]*:/i
           path_or_archive_dependency_source = /[\\\/]|\.(?:tgz|tar(?:\.gz)?)\z/i
-          allowed_private_packages = %w[
+          canonical_private_packages = %w[
             auth
             beverage-utils
             elabel-compliance
             finance
             i18n
             ui
-            ui-renderer-0-154
-            ui-renderer-0-155
           ].freeze
+          frozen_registry_aliases = {
+            "@cellarnode/ui-renderer-0-154" => "npm:@cellarnode/ui@0.154.0",
+            "@cellarnode/ui-renderer-0-155" => "npm:@cellarnode/ui@0.155.1",
+          }.freeze
           # A version-pinned npm: alias is registry-sourced, but only aliases
           # that TARGET an allowed @cellarnode package are exempt from the
           # protocol check (e.g. @cellarnode/ui-renderer-0-154 ->
           # npm:@cellarnode/ui@0.154.0, the frozen e-label public renderer,
           # CEL-1522). An npm: alias pointing anywhere else still fails.
-          allowed_registry_alias = /\Anpm:@cellarnode\/(?:#{Regexp.union(allowed_private_packages).source})@[^\s\/\\]+\z/
+          allowed_registry_alias = /\Anpm:@cellarnode\/(?:#{Regexp.union(canonical_private_packages).source})@[^\s\/\\]+\z/
           failures = []
           manifests = []
           Find.find(".") do |path|
@@ -219,15 +221,21 @@ jobs:
               value.each do |key, child|
                 child_keys = keys + [key.to_s]
                 key.to_s.scan(private_package).flatten.each do |package|
-                  failures << "#{path}:#{child_keys.join('.')}" unless allowed_private_packages.include?(package.downcase)
+                  alias_name = "@cellarnode/#{package.downcase}"
+                  allowed_frozen_alias_key = frozen_registry_aliases.key?(alias_name) &&
+                    child_keys.any? { |part| dependency_sections.include?(part) } &&
+                    child_keys.last.downcase == alias_name
+                  failures << "#{path}:#{child_keys.join('.')}" unless canonical_private_packages.include?(package.downcase) || allowed_frozen_alias_key
                 end
+                expected_alias = frozen_registry_aliases[key.to_s.downcase]
+                failures << "#{path}:#{child_keys.join('.')}" if expected_alias && child != expected_alias
                 visit.call(child, path, child_keys)
               end
             when Array
               value.each_with_index { |child, index| visit.call(child, path, keys + [index.to_s]) }
             when String
               value.scan(private_package).flatten.each do |package|
-                failures << "#{path}:#{keys.join('.')}" unless allowed_private_packages.include?(package.downcase)
+                failures << "#{path}:#{keys.join('.')}" unless canonical_private_packages.include?(package.downcase)
               end
               # An allowed registry alias is exempt from BOTH source checks: its
               # scope slash would otherwise trip the path heuristic.
@@ -266,20 +274,33 @@ jobs:
           repository_shorthand = /\A[a-z0-9._-]+(?:[\\\/][a-z0-9._-]+)+(?:#.*)?\z/i
           private_package = /@cellarnode\/([a-z0-9._-]+)/i
           dependency_sections = %w[dependencies devDependencies optionalDependencies peerDependencies].freeze
-          allowed_private_packages = %w[
+          canonical_private_packages = %w[
             auth
             beverage-utils
             elabel-compliance
             finance
             i18n
             ui
-            ui-renderer-0-154
-            ui-renderer-0-155
           ].freeze
+          frozen_registry_aliases = {
+            "@cellarnode/ui-renderer-0-154" => {
+              "specifier" => "npm:@cellarnode/ui@0.154.0",
+              "version" => /\A@cellarnode\/ui@0\.154\.0(?:\([^\n]*\))?\z/,
+            }.freeze,
+            "@cellarnode/ui-renderer-0-155" => {
+              "specifier" => "npm:@cellarnode/ui@0.155.1",
+              "version" => /\A@cellarnode\/ui@0\.155\.1(?:\([^\n]*\))?\z/,
+            }.freeze,
+          }.freeze
           failures = []
           validate_private_packages = lambda do |text, keys|
             text.to_s.scan(private_package).flatten.each do |package|
-              failures << keys.join(".") unless allowed_private_packages.include?(package.downcase)
+              alias_name = "@cellarnode/#{package.downcase}"
+              allowed_frozen_alias_key = frozen_registry_aliases.key?(alias_name) &&
+                keys.first == "importers" &&
+                dependency_sections.include?(keys[-2]) &&
+                keys.last.downcase == alias_name
+              failures << keys.join(".") unless canonical_private_packages.include?(package.downcase) || allowed_frozen_alias_key
             end
           end
           visit = lambda do |value, keys|
@@ -289,6 +310,16 @@ jobs:
                 name = key.to_s
                 child_keys = keys + [name]
                 validate_private_packages.call(name, child_keys)
+                expected_alias = frozen_registry_aliases[name.downcase]
+                if expected_alias
+                  valid_alias = keys.first == "importers" &&
+                    dependency_sections.include?(keys.last) &&
+                    child.is_a?(Hash) &&
+                    child["specifier"] == expected_alias.fetch("specifier") &&
+                    child["version"].is_a?(String) &&
+                    expected_alias.fetch("version").match?(child["version"])
+                  failures << child_keys.join(".") unless valid_alias
+                end
                 if name == "resolution"
                   valid_resolution = child.is_a?(Hash) &&
                     child.keys.map(&:to_s) == ["integrity"] &&
