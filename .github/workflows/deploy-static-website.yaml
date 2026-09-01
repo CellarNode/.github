@@ -191,6 +191,7 @@ jobs:
             i18n
             ui
             ui-renderer-0-154
+            ui-renderer-0-155
           ].freeze
           # A version-pinned npm: alias is registry-sourced, but only aliases
           # that TARGET an allowed @cellarnode package are exempt from the
@@ -273,6 +274,7 @@ jobs:
             i18n
             ui
             ui-renderer-0-154
+            ui-renderer-0-155
           ].freeze
           failures = []
           validate_private_packages = lambda do |text, keys|

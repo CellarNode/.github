@@ -193,6 +193,19 @@ fixtures = {
         resolution:
           integrity: sha512-safe
   YAML
+  "frozen 0.155 renderer alias" => [<<~YAML, true],
+    lockfileVersion: '9.0'
+    importers:
+      .:
+        dependencies:
+          '@cellarnode/ui-renderer-0-155':
+            specifier: npm:@cellarnode/ui@0.155.1
+            version: '@cellarnode/ui@0.155.1'
+    packages:
+      '@cellarnode/ui@0.155.1':
+        resolution:
+          integrity: sha512-safe
+  YAML
   "unknown private package" => [<<~YAML, false],
     lockfileVersion: '9.0'
     importers: {}
@@ -260,6 +273,7 @@ manifest_fixtures = {
   "aliased unknown private manifest package" => ["hidden-package", "npm:@cellarnode/internal-secrets@1.0.0", false],
   "allowed private manifest package" => ["@cellarnode/ui", "1.0.0", true],
   "frozen renderer registry alias" => ["@cellarnode/ui-renderer-0-154", "npm:@cellarnode/ui@0.154.0", true],
+  "frozen 0.155 renderer registry alias" => ["@cellarnode/ui-renderer-0-155", "npm:@cellarnode/ui@0.155.1", true],
   "frozen renderer alias to public target" => ["@cellarnode/ui-renderer-0-154", "npm:leftpad@1.0.0", false],
   "allowed alias with path traversal version" => ["@cellarnode/ui", "npm:@cellarnode/ui@0.154.0/../../evil", false],
   "allowed public registry range" => ["public-package", "^1.0.0", true],
