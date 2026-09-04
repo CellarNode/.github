@@ -64,7 +64,8 @@ env:
 
 jobs:
   preview-policy:
-    runs-on: ubuntu-latest
+    # Shell-only policy evaluation; runs in the ARC runner pod itself.
+    runs-on: self-hosted-k8s
     permissions:
       contents: read
     outputs:
@@ -132,7 +133,11 @@ jobs:
   build-preview:
     needs: preview-policy
     if: needs.preview-policy.outputs.trusted == 'true'
-    runs-on: ubuntu-latest
+    runs-on: self-hosted-k8s
+    # ci-runner ships node 22, pnpm (corepack), make and ruby (the manifest
+    # validator below is a Ruby heredoc). Same digest as the deploy jobs.
+    container:
+      image: europe-north1-docker.pkg.dev/festive-terrain-478011-h0/beveriq/ci-runner@sha256:8c907c4a13a14ec89617bfadb60a090abc358f91d9b888552ce91205be35a52a
     permissions:
       contents: read
       pull-requests: read
@@ -535,7 +540,11 @@ jobs:
       github.event_name == 'push' &&
       github.ref == 'refs/heads/main' &&
       needs.preview-policy.outputs.toolchain_allowed == 'true'
-    runs-on: ubuntu-latest
+    runs-on: self-hosted-k8s
+    # ci-runner ships node 22, pnpm (corepack), make and ruby (the manifest
+    # validator below is a Ruby heredoc). Same digest as the deploy jobs.
+    container:
+      image: europe-north1-docker.pkg.dev/festive-terrain-478011-h0/beveriq/ci-runner@sha256:8c907c4a13a14ec89617bfadb60a090abc358f91d9b888552ce91205be35a52a
     permissions:
       contents: read
 
@@ -645,7 +654,7 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: self-hosted-k8s
     container:
-      image: europe-north1-docker.pkg.dev/festive-terrain-478011-h0/beveriq/ci-runner@sha256:e57fadf58eb4e125a101f366a9cd97cb022e3cb8a9eae6028cefdfb0003b2960
+      image: europe-north1-docker.pkg.dev/festive-terrain-478011-h0/beveriq/ci-runner@sha256:8c907c4a13a14ec89617bfadb60a090abc358f91d9b888552ce91205be35a52a
     permissions:
       contents: read
       id-token: write
@@ -707,7 +716,7 @@ jobs:
     if: needs.preview-policy.outputs.trusted == 'true'
     runs-on: self-hosted-k8s
     container:
-      image: europe-north1-docker.pkg.dev/festive-terrain-478011-h0/beveriq/ci-runner@sha256:e57fadf58eb4e125a101f366a9cd97cb022e3cb8a9eae6028cefdfb0003b2960
+      image: europe-north1-docker.pkg.dev/festive-terrain-478011-h0/beveriq/ci-runner@sha256:8c907c4a13a14ec89617bfadb60a090abc358f91d9b888552ce91205be35a52a
     permissions:
       contents: read
       id-token: write
@@ -825,7 +834,7 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: self-hosted-k8s
     container:
-      image: europe-north1-docker.pkg.dev/festive-terrain-478011-h0/beveriq/ci-runner@sha256:e57fadf58eb4e125a101f366a9cd97cb022e3cb8a9eae6028cefdfb0003b2960
+      image: europe-north1-docker.pkg.dev/festive-terrain-478011-h0/beveriq/ci-runner@sha256:8c907c4a13a14ec89617bfadb60a090abc358f91d9b888552ce91205be35a52a
     permissions:
       contents: read
       id-token: write

@@ -252,7 +252,11 @@ jobs:
           done
 
   deploy:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted-k8s
+    # ci-runner ships the argocd CLI (v3.2.1) and jq; nothing is downloaded
+    # through NAT per run.
+    container:
+      image: europe-north1-docker.pkg.dev/festive-terrain-478011-h0/beveriq/ci-runner:latest
     needs: build
     if: >-
       (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
@@ -262,11 +266,6 @@ jobs:
         flavor: ${{ fromJson(inputs.flavors) }}
 
     steps:
-      - name: Setup ArgoCD CLI
-        uses: imajeetyadav/argocd-cli@v1
-        with:
-          version: v3.2.1
-
       - name: Deploy ${{ matrix.flavor }} to ArgoCD
         env:
           ARGOCD_AUTH_TOKEN: ${{ vars.ARGO_API_KEY }}
