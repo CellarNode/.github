@@ -7,6 +7,26 @@ workflow_path = File.expand_path("../workflows/deploy-static-website.yaml", __di
 workflow = YAML.safe_load(File.read(workflow_path), aliases: true)
 jobs = workflow.fetch("jobs")
 
+# CEL-1980: every @cellarnode/* package is public on npm and the org
+# NPM_TOKEN secret has been retired. Guard against silent re-introduction.
+workflow_call_secrets = workflow.dig("on", "workflow_call", "secrets") || {}
+abort "deploy-static-website.yaml must not declare NPM_TOKEN as a secret input (CEL-1980)" if workflow_call_secrets.key?("NPM_TOKEN")
+
+def deep_string_values(node)
+  case node
+  when Hash
+    node.values.flat_map { |value| deep_string_values(value) }
+  when Array
+    node.flat_map { |value| deep_string_values(value) }
+  when String
+    [node]
+  else
+    []
+  end
+end
+
+abort "No job may reference the retired NPM_TOKEN secret (CEL-1980)" if deep_string_values(jobs).any? { |value| value.match?(/secrets(\.|\[['"])NPM_TOKEN/) }
+
 cancel_in_progress = workflow.fetch("concurrency").fetch("cancel-in-progress")
 expected_cancel_policy = "${{ github.event_name == 'pull_request_target' }}"
 abort "Production deploys must never be cancelled in progress" unless cancel_in_progress == expected_cancel_policy
@@ -41,8 +61,8 @@ abort "Preview build must use a GitHub-hosted runner" unless build_preview.fetch
 abort "Preview build must not use a self-hosted container" if build_preview.key?("container")
 abort "Preview build must not receive NPM_TOKEN at job scope" if build_preview.fetch("env", {}).key?("NPM_TOKEN")
 abort "Preview build must allow live pull-request authorization lookup" unless build_preview.fetch("permissions", {}).fetch("pull-requests", nil) == "read"
-preview_install = build_preview.fetch("steps").find { |step| step.fetch("name", "") == "Install dependencies with scoped registry credential" }
-abort "Preview install must receive only the scoped NPM_TOKEN" unless preview_install&.fetch("env", {})&.fetch("NPM_TOKEN", nil) == "${{ secrets.NPM_TOKEN }}"
+preview_install = build_preview.fetch("steps").find { |step| step.fetch("name", "") == "Install dependencies" }
+abort "Preview install must not receive NPM_TOKEN (packages are public on npm; CEL-1980)" if preview_install&.fetch("env", {})&.key?("NPM_TOKEN")
 untrusted_preview_names = ["Verify credential isolation", "Rebuild dependencies", "Type check", "Lint", "Build preview"]
 untrusted_preview_steps = build_preview.fetch("steps").select { |step| untrusted_preview_names.include?(step.fetch("name", "")) }
 abort "Preview rebuild/check/build steps must explicitly clear NPM_TOKEN" unless untrusted_preview_steps.length == 5 && untrusted_preview_steps.all? { |step| step.fetch("env", {}).fetch("NPM_TOKEN", nil) == "" }
@@ -52,7 +72,7 @@ abort "Preview build must require the trusted policy output" unless build_previe
 preview_steps = build_preview.fetch("steps")
 dependency_validation_index = preview_steps.index { |step| step.fetch("name", "") == "Validate preview dependency inputs" }
 authorization_index = preview_steps.index { |step| step.fetch("name", "") == "Revalidate preview authorization" }
-credentialed_install_index = preview_steps.index { |step| step.fetch("name", "") == "Install dependencies with scoped registry credential" }
+credentialed_install_index = preview_steps.index { |step| step.fetch("name", "") == "Install dependencies" }
 abort "Preview dependency inputs must be validated before credentialed install" unless dependency_validation_index && credentialed_install_index && dependency_validation_index < credentialed_install_index
 abort "Preview authorization must be revalidated immediately before credentialed install" unless authorization_index && authorization_index + 1 == credentialed_install_index
 dependency_validation = preview_steps.fetch(dependency_validation_index)

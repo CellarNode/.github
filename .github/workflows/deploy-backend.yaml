@@ -36,9 +36,6 @@ on:
         type: string
         default: ""
     secrets:
-      NPM_TOKEN:
-        description: "npm token forwarded into Docker build via --secret for private @cellarnode/* installs"
-        required: false
       DISCORD_WEBHOOK_URL:
         description: "Discord webhook credential"
         required: false
@@ -182,7 +179,6 @@ jobs:
       - name: Build and push images
         shell: bash
         env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
           TARGETS: ${{ inputs.docker_targets }}
           APP: ${{ inputs.app_name }}
         run: |
@@ -218,7 +214,6 @@ jobs:
               --push \
               ${TAGS} \
               --build-arg "BACKEND_GIT_SHA=${GITHUB_SHA}" \
-              --secret id=NPM_TOKEN,env=NPM_TOKEN \
               --cache-from="type=registry,ref=${CACHE_REF}" \
               $CACHE_TO_ARG \
               .
