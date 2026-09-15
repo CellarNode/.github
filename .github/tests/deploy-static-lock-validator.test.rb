@@ -351,7 +351,7 @@ dependency_scripts = %w[build-preview build-production].to_h do |job_name|
     env = step.fetch("env", {})
     env.key?("MANIFEST_VALIDATOR") && env.key?("LOCK_VALIDATOR") && !env.key?("NPM_TOKEN")
   end
-  install_index = steps.index { |step| step["name"] == "Install dependencies with scoped registry credential" }
+  install_index = steps.index { |step| step["name"] == "Install dependencies" }
   abort "#{job_name}: credential-free dependency validation step not found" unless validation_index
   abort "#{job_name}: credentialed install step not found" unless install_index
   abort "#{job_name}: dependency validation must run before credentialed install" unless validation_index < install_index

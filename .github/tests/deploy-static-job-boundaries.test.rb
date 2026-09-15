@@ -61,7 +61,7 @@ abort "Preview build must use a GitHub-hosted runner" unless build_preview.fetch
 abort "Preview build must not use a self-hosted container" if build_preview.key?("container")
 abort "Preview build must not receive NPM_TOKEN at job scope" if build_preview.fetch("env", {}).key?("NPM_TOKEN")
 abort "Preview build must allow live pull-request authorization lookup" unless build_preview.fetch("permissions", {}).fetch("pull-requests", nil) == "read"
-preview_install = build_preview.fetch("steps").find { |step| step.fetch("name", "") == "Install dependencies with scoped registry credential" }
+preview_install = build_preview.fetch("steps").find { |step| step.fetch("name", "") == "Install dependencies" }
 abort "Preview install must not receive NPM_TOKEN (packages are public on npm; CEL-1980)" if preview_install&.fetch("env", {})&.key?("NPM_TOKEN")
 untrusted_preview_names = ["Verify credential isolation", "Rebuild dependencies", "Type check", "Lint", "Build preview"]
 untrusted_preview_steps = build_preview.fetch("steps").select { |step| untrusted_preview_names.include?(step.fetch("name", "")) }
@@ -72,7 +72,7 @@ abort "Preview build must require the trusted policy output" unless build_previe
 preview_steps = build_preview.fetch("steps")
 dependency_validation_index = preview_steps.index { |step| step.fetch("name", "") == "Validate preview dependency inputs" }
 authorization_index = preview_steps.index { |step| step.fetch("name", "") == "Revalidate preview authorization" }
-credentialed_install_index = preview_steps.index { |step| step.fetch("name", "") == "Install dependencies with scoped registry credential" }
+credentialed_install_index = preview_steps.index { |step| step.fetch("name", "") == "Install dependencies" }
 abort "Preview dependency inputs must be validated before credentialed install" unless dependency_validation_index && credentialed_install_index && dependency_validation_index < credentialed_install_index
 abort "Preview authorization must be revalidated immediately before credentialed install" unless authorization_index && authorization_index + 1 == credentialed_install_index
 dependency_validation = preview_steps.fetch(dependency_validation_index)

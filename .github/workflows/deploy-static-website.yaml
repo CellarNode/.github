@@ -447,7 +447,7 @@ jobs:
               core.setFailed('Preview authorization is no longer valid');
             }
 
-      - name: Install dependencies with scoped registry credential
+      - name: Install dependencies
         shell: bash
         env:
           NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/cellarnode-preview-npmrc
@@ -553,7 +553,7 @@ jobs:
           LOCK_VALIDATOR: ${{ runner.temp }}/cellarnode-production-lock-validator.rb
         run: *dependency-validation
 
-      - name: Install dependencies with scoped registry credential
+      - name: Install dependencies
         env:
           NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/cellarnode-production-npmrc
           MANIFEST_VALIDATOR: ${{ runner.temp }}/cellarnode-production-manifest-validator.rb
