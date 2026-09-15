@@ -1,0 +1,23 @@
+.github/workflows/deploy-static-website.yaml
+  s_431c89dae9906d::t_d03cabd5fe7808 450,556
+.github/tests/deploy-static-lock-validator.test.rb
+  s_431c89dae9906d::t_b9106fd9a51455 354
+.github/tests/deploy-static-job-boundaries.test.rb
+  s_431c89dae9906d::t_d03cabd5fe7808 64,75
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "9b2d2a4f2b9b6c359287ee5681c760f6e42c3a45",
+  "prompts": {},
+  "sessions": {
+    "s_431c89dae9906d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "10a51b64-52a7-4618-bbe7-fc4489a23d89",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "github-actions[bot] <github-actions[bot]@users.noreply.github.com>"
+    }
+  }
+}
