@@ -61,11 +61,14 @@ jobs:
             fi
             echo "push_latest=false" >> "$GITHUB_OUTPUT"
           else
-            echo "image_tag=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
             echo "should_push=true" >> "$GITHUB_OUTPUT"
             if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
+              echo "image_tag=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
               echo "push_latest=true" >> "$GITHUB_OUTPUT"
             else
+              # CEL-2322: a bare `<sha7>` tag means "built from main" (see deploy-backend.yaml): other refs get a branch- prefix.
+              SLUG=$(printf '%s' "${GITHUB_REF_NAME}" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9\n' '-' | sed 's/^-*//; s/-*$//' | cut -c1-30)
+              echo "image_tag=branch-${SLUG:-ref}-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
               echo "push_latest=false" >> "$GITHUB_OUTPUT"
             fi
           fi
