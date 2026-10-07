@@ -122,9 +122,12 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     needs: build
+    # CEL-2322: PRODUCTION deploys only from main. A workflow_dispatch on another branch still builds and pushes its
+    # `branch-<slug>-<sha7>` image (see the tag step), so that image stays available for a future preview/staging
+    # environment, but it never reaches production: see `deploy-skipped-notice`.
     if: >-
-      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
-      github.event_name == 'workflow_dispatch'
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
 
     steps:
       - name: Setup ArgoCD CLI
@@ -157,6 +160,25 @@ jobs:
             --sync-policy auto \
             --sync-option CreateNamespace=true \
             --sync-option PruneLast=true
+
+  deploy-skipped-notice:
+    # CEL-2322: say clearly why a non-main dispatch did not deploy. Future preview path (not built yet): a SEPARATE
+    # preview/staging ArgoCD project and namespace that deploys `branch-*` tags; this production workflow must never
+    # grow a non-main deploy. Add an explicit opt-in input and a distinct app name/project for it when that exists.
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main'
+    steps:
+      - name: Production deploys only from main
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          IMAGE_TAG: ${{ needs.build.outputs.image_tag }}
+        run: |
+          echo "::notice title=Deploy skipped::Production deploys only from main. Built and pushed ${IMAGE_TAG} from ${REF_NAME}; it is NOT deployed. A future preview/staging environment can deploy branch-* tags."
+          {
+            echo "### Deploy skipped"
+            echo "Production deploys only from \`main\`. This run built and pushed \`${IMAGE_TAG}\` from \`${REF_NAME}\` (kept for a future preview/staging environment) and did **not** deploy it."
+          } >> "$GITHUB_STEP_SUMMARY"
 
   # --- Discord thread lifecycle ---
 
