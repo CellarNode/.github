@@ -5,7 +5,7 @@ on:
     inputs:
       app_name:
         description: "Application name (used for image name and ArgoCD app)"
-        required: true
+        required: false
         type: string
       deploy_path:
         description: "ArgoCD kustomize path prefix in crossplane-gcloud repo"
@@ -24,7 +24,7 @@ on:
         default: ""
     secrets:
       ARGO_API_KEY:
-        description: "ArgoCD API token of the `github` account (org secret ARGO_API_KEY, CEL-2320). Callers pass it explicitly or with `secrets: inherit`."
+        description: "ArgoCD API token of the `github` account (org secret ARGO_API_KEY, CEL-2320). Optional so fork PRs (no secrets) still run the no-push build jobs; the deploy step fails fast when it is empty. Callers pass it explicitly or with `secrets: inherit`."
         required: true
       DISCORD_WEBHOOK_URL:
         description: "Discord webhook credential"
@@ -134,6 +134,12 @@ jobs:
           ARGOCD_AUTH_TOKEN: ${{ secrets.ARGO_API_KEY }}
           ARGOCD_URL: argo.anli.es
         run: |
+          # CEL-2320: ARGO_API_KEY is an optional workflow secret so fork PRs (no secrets) still reach the no-push build
+          # jobs; only THIS deploy step needs it, and it fails fast with a clear message. Never echo the value.
+          if [ -z "${ARGOCD_AUTH_TOKEN:-}" ]; then
+            echo "::error title=ARGO_API_KEY missing::The org secret ARGO_API_KEY is not available to this repository (add the repo to the secret's selected repositories, and pass it from the caller or use 'secrets: inherit')."
+            exit 1
+          fi
           APP='${{ inputs.app_name }}'
           REGISTRY="${{ env.CONTAINER_REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.CONTAINER_REPOSITORY }}"
           TAG="${{ needs.build.outputs.image_tag }}"
