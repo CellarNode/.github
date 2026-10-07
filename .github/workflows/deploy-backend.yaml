@@ -93,7 +93,7 @@ jobs:
               # CEL-2322: a bare `<sha7>` tag means "built from main". Anything pull-based (Argo CD Image Updater,
               # allowTags ^[0-9a-f]{7}$) deploys the newest such tag, so a workflow_dispatch on another branch must
               # never produce one: tag it `branch-<slug>-<sha7>`, which that regex rejects.
-              SLUG=$(printf '%s' "${GITHUB_REF_NAME}" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9\n' '-' | sed 's/^-*//; s/-*$//' | cut -c1-30)
+              SLUG=$(printf '%s' "${GITHUB_REF_NAME}" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9\n' '-' | tr -s '-' | sed 's/^-*//; s/-*$//' | cut -c1-30 | sed 's/-*$//')
               echo "image_tag=branch-${SLUG:-ref}-${SHORT_SHA}" >> $GITHUB_OUTPUT
               echo "push_latest=false" >> $GITHUB_OUTPUT
             fi
