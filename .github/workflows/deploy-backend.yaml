@@ -5,7 +5,7 @@ on:
     inputs:
       app_name:
         description: "Application name (used for image names and ArgoCD app prefix)"
-        required: false
+        required: true
         type: string
       docker_targets:
         description: "JSON array of Docker build targets, e.g. [\"unified\", \"worker\"]"
@@ -38,7 +38,7 @@ on:
     secrets:
       ARGO_API_KEY:
         description: "ArgoCD API token of the `github` account (org secret ARGO_API_KEY, CEL-2320). Optional so fork PRs (no secrets) still run the no-push build jobs; the deploy step fails fast when it is empty. Callers pass it explicitly or with `secrets: inherit`."
-        required: true
+        required: false
       DISCORD_WEBHOOK_URL:
         description: "Discord webhook credential"
         required: false
