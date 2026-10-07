@@ -23,6 +23,9 @@ on:
         type: string
         default: ""
     secrets:
+      ARGO_API_KEY:
+        description: "ArgoCD API token of the `github` account (org secret ARGO_API_KEY, CEL-2320). Callers pass it explicitly or with `secrets: inherit`."
+        required: true
       DISCORD_WEBHOOK_URL:
         description: "Discord webhook credential"
         required: false
@@ -128,7 +131,7 @@ jobs:
 
       - name: Deploy to ArgoCD
         env:
-          ARGOCD_AUTH_TOKEN: ${{ vars.ARGO_API_KEY }}
+          ARGOCD_AUTH_TOKEN: ${{ secrets.ARGO_API_KEY }}
           ARGOCD_URL: argo.anli.es
         run: |
           APP='${{ inputs.app_name }}'
