@@ -1,0 +1,25 @@
+.github/tests/deploy-gate-contract.test.rb
+  s_0090a602467faa::t_102e200fb83c64 1-148
+.github/workflows/deploy-backend.yaml
+  s_0090a602467faa::t_e86b0f7d10ecfb 96
+.github/workflows/deploy-cloudrun.yaml
+  s_0090a602467faa::t_f74d98a86b72d7 70
+.github/workflows/validate-backend-deploy.yaml
+  s_0090a602467faa::t_e9f6b58180ef02 7,9,15,17,37-48
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "0b920fca88a6f220647f49089bf2203d23e5f0bf",
+  "prompts": {},
+  "sessions": {
+    "s_0090a602467faa": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ca61e19f-7cf8-4e7c-b822-321f4f51f119",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "mjnong <marcusnagy@icloud.com>"
+    }
+  }
+}
