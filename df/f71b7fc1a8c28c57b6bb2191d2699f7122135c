@@ -1,0 +1,21 @@
+.github/workflows/deploy-backend.yaml
+  s_e054d5177536ac::t_4644f63952a88a 8,40,277-282
+.github/workflows/deploy-cloudrun.yaml
+  s_e054d5177536ac::t_537c252fdf1f8f 8,27,137-142
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "dff71b7fc1a8c28c57b6bb2191d2699f7122135c",
+  "prompts": {},
+  "sessions": {
+    "s_e054d5177536ac": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "df7c24c6-5c89-479c-88cb-c5a99988ed25",
+        "model": "unknown"
+      },
+      "human_author": "mjnong <marcusnagy@icloud.com>"
+    }
+  }
+}
