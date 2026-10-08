@@ -397,4 +397,6 @@ jobs:
     with:
       event: deploy
       status: ${{ inputs.argocd_deploy && needs.deploy.result || needs.build.result }}
+      deploy_mode: ${{ inputs.argocd_deploy && 'deployed' || 'published' }}
+      image_tag: ${{ needs.build.outputs.image_tag }}
       tags: ${{ inputs.discord_tags }}

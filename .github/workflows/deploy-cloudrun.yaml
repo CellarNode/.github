@@ -22,6 +22,11 @@ on:
         required: false
         type: string
         default: ""
+      argocd_deploy:
+        description: "CEL-2322: run the ArgoCD deploy job (`argocd app create --upsert`, needs ARGO_API_KEY). Set false for an app on the pull model (Argo CD Image Updater): the build still pushes the image, the cluster pulls it, and no ArgoCD credential is needed. Default true keeps every existing caller unchanged."
+        required: false
+        type: boolean
+        default: true
     secrets:
       ARGO_API_KEY:
         description: "ArgoCD API token of the `github` account (org secret ARGO_API_KEY, CEL-2320). Optional so fork PRs (no secrets) still run the no-push build jobs; the deploy step fails fast when it is empty. Callers pass it explicitly or with `secrets: inherit`."
@@ -125,7 +130,9 @@ jobs:
     # CEL-2322: PRODUCTION deploys only from main. A workflow_dispatch on another branch still builds and pushes its
     # `branch-<slug>-<sha7>` image (see the tag step), so that image stays available for a future preview/staging
     # environment, but it never reaches production: see `deploy-skipped-notice`.
+    # `argocd_deploy: false` (pull-model apps, CEL-2322) skips this job and with it the ARGO_API_KEY requirement.
     if: >-
+      inputs.argocd_deploy &&
       github.ref == 'refs/heads/main' &&
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
 
@@ -215,12 +222,16 @@ jobs:
       status: ${{ github.event.pull_request.merged && 'merged' || 'closed' }}
 
   discord-deploy:
-    needs: deploy
+    # With argocd_deploy=false the `deploy` job is skipped by design: report the BUILD result (the image is pushed and the
+    # cluster pulls it) instead of a misleading "skipped" warning.
+    needs: [build, deploy]
     if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
     uses: ./.github/workflows/discord-notify.yaml
     secrets:
       DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
     with:
       event: deploy
-      status: ${{ needs.deploy.result }}
+      status: ${{ inputs.argocd_deploy && needs.deploy.result || needs.build.result }}
+      deploy_mode: ${{ inputs.argocd_deploy && 'deployed' || 'published' }}
+      image_tag: ${{ needs.build.outputs.image_tag }}
       tags: ${{ inputs.discord_tags }}

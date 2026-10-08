@@ -22,6 +22,16 @@ on:
         required: false
         type: string
         default: ""
+      deploy_mode:
+        description: "deploy event only. `deployed` (default): the workflow itself deployed to production. `published`: the image was only built and pushed and a pull-model controller (Argo CD Image Updater) rolls it out later, so the notice must NOT claim a deployment (CEL-2322)."
+        required: false
+        type: string
+        default: "deployed"
+      image_tag:
+        description: "deploy event, deploy_mode=published: the pushed image tag shown in the notice"
+        required: false
+        type: string
+        default: ""
       workflow_name:
         description: "Override for context.workflow — required when invoked from a nested reusable workflow because context.workflow then resolves to this reusable's own name, not the calling pipeline's"
         required: false
@@ -45,6 +55,8 @@ jobs:
           PREVIEW_URL: ${{ inputs.preview_url }}
           TAGS: ${{ inputs.tags }}
           WORKFLOW_NAME: ${{ inputs.workflow_name }}
+          DEPLOY_MODE: ${{ inputs.deploy_mode }}
+          IMAGE_TAG: ${{ inputs.image_tag }}
         with:
           script: |
             const rawWebhook = process.env.WEBHOOK_URL;
@@ -344,8 +356,19 @@ jobs:
               });
 
             } else if (event === 'deploy') {
-              const color = status === 'success' ? 3066993 : status === 'failure' ? 15158332 : 10070709;
-              const emoji = status === 'success' ? '✅' : status === 'failure' ? '❌' : '⚠️';
+              // CEL-2322: `published` = built and pushed only; a pull-model controller rolls it out later (and may fail),
+              // so it gets its own wording, emoji and colour, never "Deployed to production".
+              const published = process.env.DEPLOY_MODE === 'published';
+              const imageTag = process.env.IMAGE_TAG || sha;
+              const color = published
+                ? (status === 'success' ? 3447003 : status === 'failure' ? 15158332 : 10070709)
+                : (status === 'success' ? 3066993 : status === 'failure' ? 15158332 : 10070709);
+              const emoji = published
+                ? (status === 'success' ? '📦' : status === 'failure' ? '❌' : '⚠️')
+                : (status === 'success' ? '✅' : status === 'failure' ? '❌' : '⚠️');
+              const deployTitle = published
+                ? (status === 'success' ? `Image published (\`${imageTag}\`); Image Updater will roll it out` : 'Image build failed')
+                : 'Deployed to production';
 
               const compareUrl = `${repoUrl}/compare/${context.payload.before?.substring(0, 7)}...${sha}`;
 
@@ -414,7 +437,7 @@ jobs:
               if (threadId) {
                 await discordPost({
                   embeds: [{
-                    title: `${emoji} Deployed to production`,
+                    title: `${emoji} ${deployTitle}`,
                     url: runUrl,
                     description: deployDescription,
                     color,
@@ -432,7 +455,7 @@ jobs:
               } else {
                 await discordPost({
                   embeds: [{
-                    title: `${emoji} Deployed to production — ${repo}`,
+                    title: `${emoji} ${deployTitle} — ${repo}`,
                     url: runUrl,
                     description: deployDescription,
                     color,

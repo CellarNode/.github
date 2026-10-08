@@ -11,6 +11,8 @@
 require "yaml"
 require "open3"
 
+# Scope: ONLY the two shared deploy workflows are held to this contract (they are the ones that gate production deploys and
+# take the argocd_deploy input). An unrelated workflow added to .github/workflows later is deliberately NOT checked here.
 WORKFLOWS = %w[deploy-backend.yaml deploy-cloudrun.yaml].freeze
 DIR = File.expand_path("../workflows", __dir__)
 FAILURES = []
@@ -21,7 +23,7 @@ end
 
 # Evaluate the tiny subset of the GitHub expression language these gates use. Anything outside the allowed token set
 # aborts: a new construct must be taught to this test deliberately.
-ALLOWED = /\A(?:\s+|'[^']*'|github\.ref_name|github\.ref|github\.event_name|inputs\.argocd_deploy|&&|\|\||==|!=|\(|\)|true|false)+\z/
+ALLOWED = /\A(?:\s+|always\(\)|needs\.(?:deploy|build)\.result|'[^']*'|github\.ref_name|github\.ref|github\.event_name|inputs\.argocd_deploy|&&|\|\||==|!=|\(|\)|true|false)+\z/
 
 def evaluate(expr, event:, ref:, argocd_deploy:)
   src = expr.to_s.gsub(/\$\{\{|\}\}/, "").gsub(/\s+/, " ").strip
@@ -89,8 +91,14 @@ WORKFLOWS.each do |file|
   notice_if = notice.fetch("if").to_s
   input = (wf["on"] || wf[true]).fetch("workflow_call").fetch("inputs", {})["argocd_deploy"]
   declared_default = input.nil? ? nil : input.fetch("default")
-  if file == "deploy-backend.yaml" && !input.nil? && (input["type"] != "boolean" || declared_default != true)
+  if input.nil?
+    fail!("#{file}: must declare the argocd_deploy workflow_call input (pull-model apps skip the ArgoCD deploy with it)")
+  elsif input["type"] != "boolean" || declared_default != true
     fail!("#{file}: argocd_deploy must be a boolean defaulting to true (existing callers must keep deploying)")
+  end
+  dd = jobs["discord-deploy"]
+  unless dd && Array(dd["needs"]).sort == %w[build deploy] && dd.dig("with", "status").to_s.include?("needs.build.result")
+    fail!("#{file}: discord-deploy must need [build, deploy] and report the build result when the deploy is skipped by design")
   end
 
   FAILURES.concat(table_failures(file, deploy_if, notice_if, declared_default))
@@ -106,6 +114,79 @@ WORKFLOWS.each do |file|
       true
     end
     fail!("#{file}: mutation `#{label}` was NOT caught by the truth table (the gate test is too weak)") unless caught
+  end
+end
+
+# --- discord-deploy notification contract (CEL-2322) ----------------------------------------------------------------------
+# With argocd_deploy=false nothing was DEPLOYED: the image was published and Image Updater rolls it out later (and may
+# fail), so the notice must (a) still run after the skipped deploy, (b) fall back to the BUILD result only in that case,
+# (c) say "published", never "Deployed to production".
+def value(expr, event: "push", ref: MAIN, argocd_deploy: true, deploy: "success", build: "success")
+  src = expr.to_s.gsub(/\$\{\{|\}\}/, "").gsub(/\s+/, " ").strip
+  abort "notification expression uses an unsupported construct: #{src}" unless src.match?(ALLOWED)
+  ruby = src.gsub("always()", "true")
+            .gsub("needs.deploy.result", deploy.inspect).gsub("needs.build.result", build.inspect)
+            .gsub("github.event_name", event.inspect).gsub("github.ref", ref.inspect)
+            .gsub("inputs.argocd_deploy", argocd_deploy.inspect).gsub("'", '"')
+  eval(ruby) # rubocop:disable Security/Eval  -- tokens validated against ALLOWED above
+end
+
+def notify_failures(file, dd, notify_text)
+  out = []
+  # (a) runs after a skipped / failed deploy on main pushes only
+  out << "#{file}: discord-deploy must start with always() (it has to run after a skipped deploy)" unless dd["if"].to_s.strip.start_with?("always()")
+  [["success", true], ["skipped", true], ["failure", true]].each do |deploy_result, _|
+    ran = value(dd["if"], deploy: deploy_result)
+    out << "#{file}: discord-deploy did not run on a main push with deploy=#{deploy_result}" unless ran
+  end
+  out << "#{file}: discord-deploy must not run for a PR" if value(dd["if"], event: "pull_request")
+  out << "#{file}: discord-deploy must not run on a branch" if value(dd["if"], ref: BRANCH)
+  # (b) status: deploy result when the ArgoCD deploy ran, build result ONLY when argocd_deploy is false
+  status = dd.dig("with", "status")
+  { [true, "success", "failure"] => "success", [true, "failure", "success"] => "failure", [true, "skipped", "success"] => "skipped",
+    [false, "skipped", "success"] => "success", [false, "skipped", "failure"] => "failure" }.each do |(flag, deploy, build), want|
+    got = value(status, argocd_deploy: flag, deploy: deploy, build: build)
+    out << "#{file}: status with argocd_deploy=#{flag} deploy=#{deploy} build=#{build} => #{got}, expected #{want}" if got != want
+  end
+  # (c) the mode handed to the notifier
+  { true => "deployed", false => "published" }.each do |flag, want|
+    mode = dd.dig("with", "deploy_mode").to_s
+    got = mode.include?("${{") ? value(mode, argocd_deploy: flag) : mode
+    out << "#{file}: deploy_mode with argocd_deploy=#{flag} => #{got}, expected #{want}" if got != want
+  end
+  out << "#{file}: discord-deploy must pass image_tag from the build job" unless dd.dig("with", "image_tag").to_s.include?("needs.build.outputs.image_tag")
+  # wording lives in discord-notify.yaml
+  out << "discord-notify: the deployed wording must be `Deployed to production`" unless notify_text.include?("'Deployed to production'")
+  pub = notify_text[/const deployTitle = published[\s\S]*?\n\n/].to_s
+  out << "discord-notify: the published wording must say the image was published and Image Updater rolls it out" unless pub.include?("Image published") && pub.include?("Image Updater will roll it out")
+  published_branch = pub.split(/\n\s*: /).first.to_s
+  out << "discord-notify: the published branch must never say Deployed" if published_branch.match?(/Deployed/i)
+  out
+end
+
+NOTIFY = File.read(File.join(DIR, "discord-notify.yaml"))
+WORKFLOWS.each do |file|
+  wf = YAML.safe_load(File.read(File.join(DIR, file)), aliases: true)
+  dd = wf.fetch("jobs").fetch("discord-deploy")
+  FAILURES.concat(notify_failures(file, dd, NOTIFY))
+
+  # The notification checks must themselves be able to fail: mutate and require detection.
+  muts = {
+    "discord-deploy loses always()" => ->(d, n) { [d.merge("if" => d["if"].sub("always() && ", "")), n] },
+    "status always reports the deploy result" => ->(d, n) { [d.merge("with" => d["with"].merge("status" => "${{ needs.deploy.result }}")), n] },
+    "status always reports the build result" => ->(d, n) { [d.merge("with" => d["with"].merge("status" => "${{ needs.build.result }}")), n] },
+    "deploy_mode is always deployed" => ->(d, n) { [d.merge("with" => d["with"].merge("deploy_mode" => "deployed")), n] },
+    "published wording says Deployed" => ->(d, n) { [d, n.sub("Image published", "Deployed to production")] },
+    "image_tag not passed" => ->(d, n) { [d.merge("with" => d["with"].reject { |k, _| k == "image_tag" }), n] }
+  }
+  muts.each do |label, mut|
+    d2, n2 = mut.call(dd, NOTIFY)
+    caught = begin
+      !notify_failures(file, d2, n2).empty?
+    rescue SystemExit
+      true
+    end
+    fail!("#{file}: notification mutation `#{label}` was NOT caught (the contract test is too weak)") unless caught
   end
 end
 
