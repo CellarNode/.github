@@ -1,0 +1,43 @@
+.github/tests/deploy-gate-contract.test.rb
+  s_0090a602467faa::t_1dea2abb33f072 14-15,26,120-192
+.github/workflows/deploy-backend.yaml
+  s_868d837560026e::t_7674e3a213cbd9 400-401
+.github/workflows/deploy-cloudrun.yaml
+  s_868d837560026e::t_d93a97966fd089 235-236
+.github/workflows/discord-notify.yaml
+  s_868d837560026e::t_129a2d1da72471 25-34,58-59,359-371,440,458
+.github/workflows/validate-backend-deploy.yaml
+  s_1dd1e7fa922d78::t_7bbe225f8d5b9e 10,19
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "94fc6c28e7391648da31f3eb5631df0731141d97",
+  "prompts": {},
+  "sessions": {
+    "s_0090a602467faa": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ca61e19f-7cf8-4e7c-b822-321f4f51f119",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "mjnong <marcusnagy@icloud.com>"
+    },
+    "s_1dd1e7fa922d78": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "961f1c74-8748-4333-a1d8-7517d0953801",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "mjnong <marcusnagy@icloud.com>"
+    },
+    "s_868d837560026e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "60d923d0-7667-47b0-8b58-187bfd583016",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "mjnong <marcusnagy@icloud.com>"
+    }
+  }
+}
