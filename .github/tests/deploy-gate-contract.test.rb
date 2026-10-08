@@ -89,8 +89,14 @@ WORKFLOWS.each do |file|
   notice_if = notice.fetch("if").to_s
   input = (wf["on"] || wf[true]).fetch("workflow_call").fetch("inputs", {})["argocd_deploy"]
   declared_default = input.nil? ? nil : input.fetch("default")
-  if file == "deploy-backend.yaml" && !input.nil? && (input["type"] != "boolean" || declared_default != true)
+  if input.nil?
+    fail!("#{file}: must declare the argocd_deploy workflow_call input (pull-model apps skip the ArgoCD deploy with it)")
+  elsif input["type"] != "boolean" || declared_default != true
     fail!("#{file}: argocd_deploy must be a boolean defaulting to true (existing callers must keep deploying)")
+  end
+  dd = jobs["discord-deploy"]
+  unless dd && Array(dd["needs"]).sort == %w[build deploy] && dd.dig("with", "status").to_s.include?("needs.build.result")
+    fail!("#{file}: discord-deploy must need [build, deploy] and report the build result when the deploy is skipped by design")
   end
 
   FAILURES.concat(table_failures(file, deploy_if, notice_if, declared_default))
