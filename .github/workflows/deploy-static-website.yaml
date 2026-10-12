@@ -187,6 +187,7 @@ jobs:
           protocol_dependency_source = /\A[a-z][a-z0-9+.-]*:/i
           path_or_archive_dependency_source = /[\\\/]|\.(?:tgz|tar(?:\.gz)?)\z/i
           canonical_private_packages = %w[
+            agent-cards
             auth
             beverage-utils
             elabel-compliance
@@ -279,6 +280,7 @@ jobs:
           private_package = /@cellarnode\/([a-z0-9._-]+)/i
           dependency_sections = %w[dependencies devDependencies optionalDependencies peerDependencies].freeze
           canonical_private_packages = %w[
+            agent-cards
             auth
             beverage-utils
             elabel-compliance
