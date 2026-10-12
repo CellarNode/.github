@@ -1,0 +1,14 @@
+.github/workflows/deploy-static-website.yaml
+  h_af7161f060dc1e 190,283
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "e0ed763b9dd1b7f1d4af1122f3ce23b9dfe7e836",
+  "prompts": {},
+  "humans": {
+    "h_af7161f060dc1e": {
+      "author": "mjnong <marcusnagy@icloud.com>"
+    }
+  }
+}
