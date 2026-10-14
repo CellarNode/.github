@@ -878,7 +878,7 @@ jobs:
     needs: preview-policy
     if: >-
       needs.preview-policy.outputs.trusted == 'true' &&
-      github.event.action == 'opened'
+      (github.event.action == 'opened' || github.event.action == 'ready_for_review')
     permissions:
       pull-requests: write
     uses: ./.github/workflows/discord-notify.yaml

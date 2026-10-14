@@ -353,7 +353,8 @@ jobs:
   # --- Discord thread lifecycle ---
 
   discord-thread-open:
-    if: github.event_name == 'pull_request' && github.event.action == 'opened'
+    # CEL-2546: also on ready_for_review (draft PRs build nothing, so a draft-first PR never reached `opened`); thread_open is idempotent.
+    if: github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'ready_for_review')
     uses: ./.github/workflows/discord-notify.yaml
     secrets:
       DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}

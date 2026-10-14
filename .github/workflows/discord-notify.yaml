@@ -198,6 +198,14 @@ jobs:
               const pr = context.payload.pull_request;
               if (!pr) return;
 
+              // Idempotent (CEL-2546): the thread opens on `opened` AND on `ready_for_review` (a PR opened as a draft builds nothing, so it
+              // never reached `opened`). A PR that already has a thread (not draft-first, or converted to draft and back) keeps it.
+              const existing = await getMetadata();
+              if (existing.threadId) {
+                core.notice('Discord thread already exists for this PR - not opening another');
+                return;
+              }
+
               const msg = await discordPost({
                 content: `⚠️ **Review required** — ${repo}`,
                 embeds: [{
