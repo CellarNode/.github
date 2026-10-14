@@ -881,6 +881,11 @@ jobs:
       (github.event.action == 'opened' || github.event.action == 'ready_for_review')
     permissions:
       pull-requests: write
+    # CEL-2546: two overlapping runs for one PR (opened + ready_for_review, a re-run) must not both create a thread. They queue instead
+    # (cancel-in-progress: false, a started thread-open is never killed mid-create), and the second sees the first's metadata comment.
+    concurrency:
+      group: discord-thread-${{ github.repository }}-${{ github.event.pull_request.number }}
+      cancel-in-progress: false
     uses: ./.github/workflows/discord-notify.yaml
     secrets:
       DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
