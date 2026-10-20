@@ -22,6 +22,50 @@ abort "pnpm setup must use an audited commit" unless steps.any? { |step| step.fe
 create_pr = steps.find { |step| step.fetch("id", "") == "create_pr" }
 abort "Create PR must use only I18N_PIPELINE_TOKEN" unless create_pr&.fetch("env", {})&.fetch("GH_TOKEN", nil) == "${{ secrets.I18N_PIPELINE_TOKEN }}"
 
+ensure_gh = steps.find { |step| step.fetch("name", "") == "Ensure GitHub CLI is available" }
+abort "GitHub CLI setup must precede PR creation" unless ensure_gh && steps.index(ensure_gh) < steps.index(create_pr)
+expected_gh_setup_if = "github.event.repository.private == true && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && steps.diff.outputs.changed == 'true'"
+abort "GitHub CLI setup must run only for changed trusted private translation runs" unless ensure_gh.fetch("if", "") == expected_gh_setup_if
+abort "GitHub CLI setup must not receive a token" if ensure_gh.fetch("env", {}).key?("GH_TOKEN")
+
+gh_setup = ensure_gh.fetch("run")
+
+def run_gh_setup(script, gh_available:)
+  Dir.mktmpdir("i18n-gh-setup-test") do |workdir|
+    bin_dir = File.join(workdir, "bin")
+    Dir.mkdir(bin_dir)
+    log = File.join(workdir, "apt-get.log")
+    gh_path = File.join(bin_dir, "gh")
+    apt_get_path = File.join(bin_dir, "apt-get")
+
+    if gh_available
+      File.write(gh_path, "#!/bin/bash\nprintf 'gh version fixture\\n'\n")
+      File.chmod(0o755, gh_path)
+    end
+    File.write(apt_get_path, <<~'BASH')
+      #!/bin/bash
+      printf 'apt-get %s\n' "$*" >> "$GH_SETUP_LOG"
+      if [ "$1" = "install" ]; then
+        printf "#!/bin/bash\\nprintf 'gh version fixture\\n'\\n" > "$FAKE_BIN/gh"
+        /bin/chmod +x "$FAKE_BIN/gh"
+      fi
+    BASH
+    File.chmod(0o755, apt_get_path)
+
+    env = { "FAKE_BIN" => bin_dir, "GH_SETUP_LOG" => log, "PATH" => bin_dir }
+    stdout, stderr, status = Open3.capture3(env, "/bin/bash", "-c", script)
+    calls = File.exist?(log) ? File.readlines(log, chomp: true) : []
+    [stdout + stderr, status, calls]
+  end
+end
+
+available_output, available_status, available_calls = run_gh_setup(gh_setup, gh_available: true)
+abort "Existing GitHub CLI must skip package installation" unless available_status.success? && available_calls.empty? && available_output.include?("gh version fixture")
+missing_output, missing_status, missing_calls = run_gh_setup(gh_setup, gh_available: false)
+abort "Missing GitHub CLI setup failed (status=#{missing_status.exitstatus}, calls=#{missing_calls.inspect}, output=#{missing_output.inspect})" unless missing_status.success? &&
+  missing_calls == ["apt-get update", "apt-get install -y --no-install-recommends gh"] &&
+  missing_output.include?("gh version fixture")
+
 script = create_pr.fetch("run")
 abort "Push must not place GH_TOKEN in its URL" if script.include?('x-access-token:${GH_TOKEN}@')
 abort "Credential file creation must use a restrictive umask" unless script.include?("umask 077")
@@ -116,4 +160,4 @@ classic_fixtures.each do |name, (payload, expected)|
   abort "Classic fixture #{name} failed: #{output}" unless status.success? && output.strip == expected
 end
 
-puts "i18n pipeline authentication boundary: PASS"
+puts "i18n pipeline authentication boundary and conditional gh setup: PASS"

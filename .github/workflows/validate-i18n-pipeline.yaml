@@ -35,5 +35,8 @@ jobs:
       - name: Validate translation cache isolation
         run: ruby .github/tests/i18n-pipeline-translation-cache.test.rb
 
+      - name: Validate translation runner trust boundary
+        run: ruby .github/tests/i18n-pipeline-runner-boundary.test.rb
+
       - name: Validate lint runner trust boundary
         run: ruby .github/tests/i18n-lint-runner-boundary.test.rb

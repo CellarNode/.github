@@ -4,7 +4,10 @@ require "yaml"
 
 workflow_path = File.expand_path("../workflows/i18n-pipeline.yaml", __dir__)
 workflow = YAML.safe_load(File.read(workflow_path), aliases: true)
-steps = workflow.fetch("jobs").fetch("sync-translate").fetch("steps")
+job = workflow.fetch("jobs").fetch("sync-translate")
+shell = job.fetch("defaults").fetch("run").fetch("shell")
+abort "Translation job must select Bash for its run steps" unless shell == "bash"
+steps = job.fetch("steps")
 translate = steps.find { |step| step.fetch("name", "") == "Translate new/changed keys" }
 abort "Translation step missing" unless translate
 
@@ -22,7 +25,7 @@ abort "CLI must receive one target language per invocation" unless script.includ
 abort "Each language must receive its own cache copy" unless script.include?('--cache-file "$language_cache"')
 abort "Updated source hashes must return to the tracked cache" unless script.include?('cp "$updated_cache" .polyglot-cache.json')
 
-def run_translation(script, target_languages)
+def run_translation(script, target_languages, shell)
   Dir.mktmpdir("i18n-pipeline-test") do |workdir|
     bin_dir = File.join(workdir, "bin")
     Dir.mkdir(bin_dir)
@@ -54,7 +57,7 @@ def run_translation(script, target_languages)
       "TARGET_LANGUAGES" => target_languages,
       "TRANSLATION_CONTEXT" => "test",
     }
-    stdout, stderr, status = Open3.capture3(env, "bash", "-c", script, chdir: workdir)
+    stdout, stderr, status = Open3.capture3(env, shell, "-c", script, chdir: workdir)
     calls = File.exist?(call_log) ? File.readlines(call_log, chomp: true) : []
     cache_path = File.join(workdir, ".polyglot-cache.json")
     cache = File.exist?(cache_path) ? File.read(cache_path) : nil
@@ -73,14 +76,14 @@ invalid_languages = {
 }.freeze
 
 invalid_languages.each do |target_languages, expected_error|
-  output, status, calls, = run_translation(script, target_languages)
+  output, status, calls, = run_translation(script, target_languages, shell)
   abort "Invalid languages #{target_languages.inspect} must fail with validation" if status.success? || !output.include?(expected_error)
   abort "Invalid languages #{target_languages.inspect} must fail before translation" unless calls.empty?
 end
 
-_output, status, calls, cache = run_translation(script, "sv, de")
+_output, status, calls, cache = run_translation(script, "sv, de", shell)
 abort "Valid languages must translate successfully" unless status.success?
 abort "Every language must receive the untouched cache" unless calls == ["sv:{}", "de:{}"]
 abort "Tracked cache must receive one updated language cache" unless cache == "{\"updated\":\"de\"}\n"
 
-puts "i18n pipeline per-language cache isolation: PASS"
+puts "i18n pipeline per-language cache isolation with workflow-selected shell: PASS (#{shell})"
