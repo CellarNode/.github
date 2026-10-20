@@ -87,7 +87,15 @@ on:
 
 jobs:
   sync-translate:
-    runs-on: ubuntu-latest
+    runs-on: >-
+      ${{ github.event.repository.private == true &&
+          (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+          'self-hosted-k8s' || 'ubuntu-latest' }}
+    container: >-
+      ${{ github.event.repository.private == true &&
+          (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+          'europe-north1-docker.pkg.dev/festive-terrain-478011-h0/beveriq/ci-runner@sha256:b8ae250c5d7fae79dbbea1f62ca7613ecabd6f3efbd13b533cbdecb293cdf814'
+          || '' }}
     # CEL-1259 step 3 — when auto-merge lands our own "chore(i18n): sync +
     # translate" squash on the base branch, the callers' `push` +
     # `paths: ['src/**']` trigger would re-run this whole pipeline (bounded:
@@ -107,6 +115,9 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -272,6 +283,18 @@ jobs:
       # The branch name carries seconds (`%H%M%S`, was `%H%M`) so two runs that
       # reach this step inside the same minute cannot collide on one branch name
       # and turn the second push into a non-fast-forward rejection.
+      - name: Ensure GitHub CLI is available
+        if: >-
+          github.event.repository.private == true &&
+          (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+          steps.diff.outputs.changed == 'true'
+        run: |
+          if ! command -v gh >/dev/null 2>&1; then
+            apt-get update
+            apt-get install -y --no-install-recommends gh
+          fi
+          gh --version
+
       - name: Create PR
         id: create_pr
         if: steps.diff.outputs.changed == 'true'
