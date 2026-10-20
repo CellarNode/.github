@@ -16,6 +16,7 @@ require "open3"
 WORKFLOWS = %w[deploy-backend.yaml deploy-cloudrun.yaml].freeze
 DIR = File.expand_path("../workflows", __dir__)
 FAILURES = []
+CI_RUNNER_IMAGE = "europe-north1-docker.pkg.dev/festive-terrain-478011-h0/beveriq/ci-runner@sha256:b8ae250c5d7fae79dbbea1f62ca7613ecabd6f3efbd13b533cbdecb293cdf814".freeze
 
 def fail!(msg)
   FAILURES << msg
@@ -221,8 +222,50 @@ WORKFLOWS.each do |file|
   end
 end
 
+backend = YAML.safe_load(File.read(File.join(DIR, "deploy-backend.yaml")), aliases: true)
+backend_deploy = backend.fetch("jobs").fetch("deploy")
+FAILURES << "deploy-backend: production deploy must use self-hosted-k8s" unless backend_deploy["runs-on"] == "self-hosted-k8s"
+FAILURES << "deploy-backend: production deploy must pin the approved ci-runner image" unless backend_deploy.dig("container", "image") == CI_RUNNER_IMAGE
+fork_build = backend.fetch("jobs").fetch("build-fork")
+FAILURES << "deploy-backend: fork PR builds must stay on GitHub-hosted runners" unless fork_build["runs-on"] == "ubuntu-latest"
+FAILURES << "deploy-backend: fork PR build must remain restricted to external pull requests" unless fork_build["if"].to_s.include?("github.event.pull_request.head.repo.full_name != github.repository")
+FAILURES << "deploy-backend: fork PR build must not request workload identity" if fork_build.dig("permissions", "id-token") == "write"
+FAILURES << "deploy-backend: fork PR build must not push built images" if fork_build.fetch("steps").map { |step| step["run"].to_s }.join.include?("--push")
+
+def evaluate_notify_runner(expr, event:, ref:, notify_event:)
+  src = expr.to_s.gsub(/\$\{\{|\}\}/, "").gsub(/\s+/, " ").strip
+  allowed = /\A(?:\s+|inputs\.event|github\.ref|github\.event_name|'(?:deploy|refs\/heads\/main|push|workflow_dispatch|self-hosted-k8s|ubuntu-latest)'|==|&&|\|\||\(|\))+\z/
+  abort "notification runner expression uses an unsupported construct: #{src}" unless src.match?(allowed)
+  ruby = src.gsub("inputs.event", notify_event.inspect)
+            .gsub("github.ref", ref.inspect)
+            .gsub("github.event_name", event.inspect)
+            .gsub("'", '"')
+  eval(ruby) # rubocop:disable Security/Eval
+end
+
+notify_workflow = YAML.safe_load(File.read(File.join(DIR, "discord-notify.yaml")), aliases: true)
+notify_job = notify_workflow.fetch("jobs").fetch("notify")
+runner_expr = notify_job.fetch("runs-on").to_s
+runner_scenarios = [
+  ["deploy", "push", MAIN, "self-hosted-k8s"],
+  ["deploy", "workflow_dispatch", MAIN, "self-hosted-k8s"],
+  ["deploy", "pull_request", "refs/pull/7/merge", "ubuntu-latest"],
+  ["deploy", "pull_request_target", MAIN, "ubuntu-latest"],
+  ["deploy", "push", BRANCH, "ubuntu-latest"],
+  ["deploy", "workflow_dispatch", BRANCH, "ubuntu-latest"],
+  ["thread_open", "pull_request", "refs/pull/7/merge", "ubuntu-latest"],
+  ["thread_update", "pull_request", "refs/pull/7/merge", "ubuntu-latest"],
+  ["thread_close", "pull_request", "refs/pull/7/merge", "ubuntu-latest"],
+  ["thread_open", "push", MAIN, "ubuntu-latest"]
+].freeze
+runner_scenarios.each do |notify_event, event, ref, want|
+  got = evaluate_notify_runner(runner_expr, event: event, ref: ref, notify_event: notify_event)
+  FAILURES << "discord-notify: #{notify_event} on #{event} #{ref} selects #{got.inspect}, expected #{want.inspect}" unless got == want
+end
+FAILURES << "discord-notify: routed job must use a public container available to hosted fork notifications" unless notify_job.dig("container", "image") == "ubuntu:24.04"
+
 if FAILURES.empty?
-  puts "deploy gate contract: OK (#{WORKFLOWS.join(', ')}: truth table, notice, argocd_deploy default, mutations caught, slug cases)"
+  puts "deploy gate contract: OK (deploy truth table, notification runner trust table, mutations caught, slug cases)"
 else
   warn "deploy gate contract FAILED:\n  - #{FAILURES.join("\n  - ")}"
   exit 1
