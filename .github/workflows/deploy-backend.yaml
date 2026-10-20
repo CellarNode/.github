@@ -260,7 +260,9 @@ jobs:
           done
 
   deploy:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted-k8s
+    container:
+      image: europe-north1-docker.pkg.dev/festive-terrain-478011-h0/beveriq/ci-runner@sha256:b8ae250c5d7fae79dbbea1f62ca7613ecabd6f3efbd13b533cbdecb293cdf814
     needs: build
     # CEL-2322: PRODUCTION deploys only from main. A workflow_dispatch on another branch still builds and pushes its
     # `branch-<slug>-<sha7>` image (see the tag step), so that image stays available for a future preview/staging
@@ -275,11 +277,6 @@ jobs:
         flavor: ${{ fromJson(inputs.flavors) }}
 
     steps:
-      - name: Setup ArgoCD CLI
-        uses: imajeetyadav/argocd-cli@v1
-        with:
-          version: v3.2.1
-
       - name: Deploy ${{ matrix.flavor }} to ArgoCD
         env:
           ARGOCD_AUTH_TOKEN: ${{ secrets.ARGO_API_KEY }}

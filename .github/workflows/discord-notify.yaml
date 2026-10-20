@@ -44,7 +44,16 @@ on:
 
 jobs:
   notify:
-    runs-on: ubuntu-latest
+    # Only trusted production deploy notices use the cluster runner. PR
+    # lifecycle events can originate from forks and stay on GitHub-hosted.
+    runs-on: >-
+      ${{ inputs.event == 'deploy' && github.ref == 'refs/heads/main' &&
+          (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+          'self-hosted-k8s' || 'ubuntu-latest' }}
+    # ARC's Kubernetes mode requires a job container; use a public, stable
+    # base image so fork PR notifications remain runnable without registry auth.
+    container:
+      image: ubuntu:24.04
     steps:
       - name: Discord notification
         uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
