@@ -3,6 +3,8 @@ name: Validate i18n pipeline
 on:
   pull_request:
     paths:
+      - .github/workflows/i18n-lint.yaml
+      - .github/tests/i18n-lint-runner-boundary.test.rb
       - .github/workflows/i18n-pipeline.yaml
       - .github/tests/i18n-pipeline-*.test.rb
       - .github/workflows/validate-i18n-pipeline.yaml
@@ -10,6 +12,8 @@ on:
     branches:
       - main
     paths:
+      - .github/workflows/i18n-lint.yaml
+      - .github/tests/i18n-lint-runner-boundary.test.rb
       - .github/workflows/i18n-pipeline.yaml
       - .github/tests/i18n-pipeline-*.test.rb
       - .github/workflows/validate-i18n-pipeline.yaml
@@ -30,3 +34,6 @@ jobs:
 
       - name: Validate translation cache isolation
         run: ruby .github/tests/i18n-pipeline-translation-cache.test.rb
+
+      - name: Validate lint runner trust boundary
+        run: ruby .github/tests/i18n-lint-runner-boundary.test.rb
