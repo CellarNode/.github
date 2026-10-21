@@ -126,6 +126,42 @@ jobs:
           # the push succeed while a stale PAT fails seconds later.
           persist-credentials: false
 
+      # CEL-2768 — a self-hosted container job runs as root in a workspace the
+      # runner user owns. actions/checkout trusts that directory only through
+      # a temporary HOME it discards when it finishes, so every later `git`
+      # call saw a dubious-ownership checkout: `git diff` fell back to
+      # `--no-index` (exit 129) and `git config` died with "not in a git
+      # directory". Trust the workspace for the rest of the job through the
+      # environment, which holds whatever HOME a step runs with.
+      - name: Trust the workspace for git
+        run: |
+          {
+            echo "GIT_CONFIG_COUNT=1"
+            echo "GIT_CONFIG_KEY_0=safe.directory"
+            echo "GIT_CONFIG_VALUE_0=$GITHUB_WORKSPACE"
+          } >> "$GITHUB_ENV"
+
+      - name: Verify git can read the workspace
+        run: |
+          if ! git rev-parse --is-inside-work-tree >/dev/null; then
+            echo "::error title=Workspace not readable by git::The checkout is not usable as a git repository (dubious ownership or a missing .git directory)."
+            exit 1
+          fi
+
+      # Fail before the install and the Gemini pass, not after them, when the
+      # token that Create PR depends on never reached the job. An empty value
+      # is not a masked one: it appears as a blank `GH_TOKEN:` in the step env.
+      - name: Verify I18N_PIPELINE_TOKEN is present
+        env:
+          I18N_PIPELINE_TOKEN: ${{ secrets.I18N_PIPELINE_TOKEN }}
+        run: |
+          if [[ -z "${I18N_PIPELINE_TOKEN//[[:space:]]/}" ]]; then
+            echo "::error title=I18N_PIPELINE_TOKEN empty::The secret resolved to an empty value in this job."
+            echo "::error::A repository-level secret named I18N_PIPELINE_TOKEN overrides the organization secret of the same name; delete it or give it a valid value."
+            echo "::error::Otherwise check that this repository is in the organization secret's selected repositories and that the caller passes 'secrets: inherit'."
+            exit 1
+          fi
+
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
@@ -272,8 +308,27 @@ jobs:
 
       - name: Check for changes
         id: diff
+        env:
+          LOCALES_PATH: ${{ inputs.locales_path }}
         run: |
-          git diff --exit-code && echo "changed=false" >> $GITHUB_OUTPUT || echo "changed=true" >> $GITHUB_OUTPUT
+          # Look at exactly the paths Create PR stages, and count untracked
+          # files: a run whose only output is a new namespace or language file,
+          # or a first `.polyglot-cache.json`, is a change. (`git diff` ignores
+          # untracked files, so it reported changed=false and opened no PR.)
+          # A git failure must fail the step. The old `a && b || c` chain read
+          # `git diff` exiting 129 outside a repository as "changed" and sent
+          # the run on to Create PR with a broken checkout.
+          rc=0
+          changes="$(git status --porcelain -- "$LOCALES_PATH" .polyglot-cache.json src/)" || rc=$?
+          if [ "$rc" -ne 0 ]; then
+            echo "::error title=Change detection failed::git status exited $rc, so the working tree could not be inspected."
+            exit "$rc"
+          fi
+          if [ -n "$changes" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
 
       # CEL-1259 step 1/3 — the replacement PR is opened FIRST, and only then
       # are the predecessors it supersedes closed (next step). Ordering matters:
