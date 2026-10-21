@@ -308,21 +308,27 @@ jobs:
 
       - name: Check for changes
         id: diff
+        env:
+          LOCALES_PATH: ${{ inputs.locales_path }}
         run: |
-          # `git diff --quiet` exits 0 (clean) or 1 (differences). Any other
-          # status means git itself failed (129 outside a repository). The old
-          # `a && b || c` chain read that as "changed" and sent the run on to
-          # Create PR with a broken checkout.
+          # Look at exactly the paths Create PR stages, and count untracked
+          # files: a run whose only output is a new namespace or language file,
+          # or a first `.polyglot-cache.json`, is a change. (`git diff` ignores
+          # untracked files, so it reported changed=false and opened no PR.)
+          # A git failure must fail the step. The old `a && b || c` chain read
+          # `git diff` exiting 129 outside a repository as "changed" and sent
+          # the run on to Create PR with a broken checkout.
           rc=0
-          git diff --quiet || rc=$?
-          case "$rc" in
-            0) echo "changed=false" >> "$GITHUB_OUTPUT" ;;
-            1) echo "changed=true" >> "$GITHUB_OUTPUT" ;;
-            *)
-              echo "::error title=Change detection failed::git diff exited $rc, so the working tree could not be compared."
-              exit "$rc"
-              ;;
-          esac
+          changes="$(git status --porcelain -- "$LOCALES_PATH" .polyglot-cache.json src/)" || rc=$?
+          if [ "$rc" -ne 0 ]; then
+            echo "::error title=Change detection failed::git status exited $rc, so the working tree could not be inspected."
+            exit "$rc"
+          fi
+          if [ -n "$changes" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
 
       # CEL-1259 step 1/3 — the replacement PR is opened FIRST, and only then
       # are the predecessors it supersedes closed (next step). Ordering matters:

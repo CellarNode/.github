@@ -58,8 +58,11 @@ Dir.mktmpdir("i18n-git-workspace-test") do |root|
   FileUtils.mkdir_p([home, workspace])
   git_env = { "HOME" => home }
   system(git_env.merge(BASE_ENV), "git", "init", "-q", workspace, exception: true)
-  File.write(File.join(workspace, "en.json"), "{}\n")
-  system(git_env.merge(BASE_ENV), "git", "-C", workspace, "add", "en.json", exception: true)
+  # The paths Create PR stages (locales, the translation cache, src/) plus one file outside them.
+  FileUtils.mkdir_p([File.join(workspace, "public/locales/en"), File.join(workspace, "src")])
+  tracked = { "public/locales/en/common.json" => "{}\n", "src/types.ts" => "export {};\n", "README.md" => "docs\n" }
+  tracked.each { |path, body| File.write(File.join(workspace, path), body) }
+  system(git_env.merge(BASE_ENV), "git", "-C", workspace, "add", *tracked.keys, exception: true)
   system(git_env.merge(BASE_ENV), "git", "-C", workspace, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init", exception: true)
 
   # A checkout owned by another user, as the runner user's workspace is to root in the container.
@@ -84,25 +87,52 @@ Dir.mktmpdir("i18n-git-workspace-test") do |root|
   _out, err, status = run_step(verify_git.fetch("run"), shell, trusted, workspace)
   abort "Git pre-flight must pass on a trusted checkout: #{err}" unless status.success?
 
-  # Change detection: a clean tree, a modified tree, and a git failure are three different answers.
+  # Change detection looks at what Create PR stages, counts untracked files, and fails on a git failure.
   detect = diff.fetch("run")
+  abort "Change detection must receive the locales path the way Create PR does" unless diff.fetch("env", {}) == { "LOCALES_PATH" => "${{ inputs.locales_path }}" }
   output = File.join(root, "github_output")
-  detect_env = ->(base) { base.merge("GITHUB_OUTPUT" => output) }
+  detect_env = ->(base) { base.merge("GITHUB_OUTPUT" => output, "LOCALES_PATH" => "public/locales") }
+  detect_in = lambda do |env|
+    File.write(output, "")
+    out, err, status = run_step(detect, shell, detect_env[env], workspace)
+    [out, err, status, File.read(output)]
+  end
+  reset = -> { system(git_env.merge(BASE_ENV), "git", "-C", workspace, "clean", "-fdq", exception: true); system(git_env.merge(BASE_ENV), "git", "-C", workspace, "checkout", "-q", "--", ".", exception: true) }
 
-  File.write(output, "")
-  _out, err, status = run_step(detect, shell, detect_env[trusted], workspace)
-  abort "Clean tree must succeed: #{err}" unless status.success? && File.read(output) == "changed=false\n"
+  _out, err, status, result = detect_in[trusted]
+  abort "Clean tree must succeed: #{err}" unless status.success? && result == "changed=false\n"
 
-  File.write(File.join(workspace, "en.json"), "{\"a\":1}\n")
-  File.write(output, "")
-  _out, err, status = run_step(detect, shell, detect_env[trusted], workspace)
-  abort "Modified tree must report a change: #{err}" unless status.success? && File.read(output) == "changed=true\n"
+  {
+    "modified tracked locale file" => ["public/locales/en/common.json", "{\"a\":1}\n", "changed=true\n"],
+    "new language file (untracked)" => ["public/locales/de/common.json", "{\"a\":1}\n", "changed=true\n"],
+    "new namespace file (untracked)" => ["public/locales/en/extra.json", "{}\n", "changed=true\n"],
+    "first translation cache (untracked)" => [".polyglot-cache.json", "{}\n", "changed=true\n"],
+    "new file under src (untracked)" => ["src/new-types.ts", "export {};\n", "changed=true\n"],
+    "modified file outside the staged paths" => ["README.md", "changed\n", "changed=false\n"],
+    "untracked file outside the staged paths" => ["notes.txt", "x\n", "changed=false\n"],
+  }.each do |name, (path, body, expected)|
+    FileUtils.mkdir_p(File.dirname(File.join(workspace, path)))
+    File.write(File.join(workspace, path), body)
+    _out, err, status, result = detect_in[trusted]
+    abort "Change detection (#{name}) expected #{expected.strip}, got #{result.inspect}: #{err}" unless status.success? && result == expected
+    reset.call
+  end
+  FileUtils.rm_rf(File.join(workspace, "public/locales/de"))
 
+  # The legacy chain compares tracked files only, so a run whose only output is a new file opened no PR.
+  FileUtils.mkdir_p(File.join(workspace, "public/locales/de"))
+  File.write(File.join(workspace, "public/locales/de/common.json"), "{}\n")
   File.write(output, "")
-  out, _err, status = run_step(detect, shell, detect_env[foreign], workspace)
+  legacy_untracked = 'git diff --exit-code && echo "changed=false" >> $GITHUB_OUTPUT || echo "changed=true" >> $GITHUB_OUTPUT'
+  _out, _err, status = run_step(legacy_untracked, shell, detect_env[trusted], workspace)
+  abort "Legacy chain scenario drifted: it must miss an untracked-only change" unless status.success? && File.read(output) == "changed=false\n"
+  reset.call
+  FileUtils.rm_rf(File.join(workspace, "public/locales/de"))
+
+  out, _err, status, result = detect_in[foreign]
   abort "A git failure must fail the step instead of reporting a change" if status.success?
-  abort "A git failure must not write a changed= output" unless File.read(output).empty?
-  abort "A git failure must be annotated with git's exit status" unless out.include?("::error title=Change detection failed::git diff exited 129")
+  abort "A git failure must not write a changed= output" unless result.empty?
+  abort "A git failure must be annotated with git's exit status" unless out.match?(/::error title=Change detection failed::git status exited [1-9]\d*/)
 
   # The run observed on the self-hosted runner: the legacy chain reports a change
   # when git cannot read the checkout, which is what this test must keep catching.
