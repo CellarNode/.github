@@ -1,0 +1,27 @@
+.github/tests/deploy-static-job-boundaries.test.rb
+  s_9cdd1e432c7e36::t_24878747dfbf2e 72-86
+  s_9cdd1e432c7e36::t_a07e91afcbd9bb 51,71,112-156
+  s_9cdd1e432c7e36::t_8606c62baf5483 44
+  s_9cdd1e432c7e36::t_78183008700183 36-43,45-50,52,54-70,97-101,158-160,272-275
+.github/workflows/deploy-static-website.yaml
+  s_9cdd1e432c7e36::t_2f4f9a4261450c 64-77
+  s_9cdd1e432c7e36::t_1b2989a1cb4f00 121-128
+  s_9cdd1e432c7e36::t_ab8fee9fb21830 152-156
+  s_9cdd1e432c7e36::t_2542f815d7f934 555-557
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "0396b7a9b549dc1089f98dc21985b0bee1cf8a82",
+  "prompts": {},
+  "sessions": {
+    "s_9cdd1e432c7e36": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "132c0aa6-1da6-455b-9c6f-95977492cf19",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "mjnong <marcusnagy@icloud.com>"
+    }
+  }
+}
