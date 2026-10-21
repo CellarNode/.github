@@ -1,0 +1,19 @@
+.github/workflows/deploy-static-website.yaml
+  s_acea335888397f::t_03b012182dbd0d 190,283
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "371f3848897cb8792905604bf49fe42f0e3acc15",
+  "prompts": {},
+  "sessions": {
+    "s_acea335888397f": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a125d5-5fa5-7782-a42c-0aaf8c9952c3",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "mjnong <marcusnagy@icloud.com>"
+    }
+  }
+}

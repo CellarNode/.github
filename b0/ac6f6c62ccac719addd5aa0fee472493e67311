@@ -1,0 +1,26 @@
+.github/workflows/discord-notify.yaml
+  s_e08c290cfdeacc::t_68255a86764e1c 47-56
+.github/workflows/deploy-backend.yaml
+  s_e08c290cfdeacc::t_68255a86764e1c 263-265
+.github/tests/deploy-gate-contract.test.rb
+  s_e08c290cfdeacc::t_d45bee6e460a8e 229-233
+  s_e08c290cfdeacc::t_d00c03bd8a26cc 268
+  s_e08c290cfdeacc::t_426ffaed67ff6c 237,239-243
+  s_e08c290cfdeacc::t_fc74548abfec01 19,225-228,234-236,238,244-266
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "b0ac6f6c62ccac719addd5aa0fee472493e67311",
+  "prompts": {},
+  "sessions": {
+    "s_e08c290cfdeacc": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a14e81-48ad-7c13-ab0a-c14241945059",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "github-actions[bot] <github-actions[bot]@users.noreply.github.com>"
+    }
+  }
+}

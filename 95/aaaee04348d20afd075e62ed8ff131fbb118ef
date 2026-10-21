@@ -1,0 +1,23 @@
+.github/tests/i18n-lint-runner-boundary.test.rb
+  s_e08c290cfdeacc::t_ddaff83ab10b49 1-67
+.github/workflows/validate-i18n-pipeline.yaml
+  s_e08c290cfdeacc::t_36fd7d66e84ee0 6-7,15-16,37-39
+.github/workflows/i18n-lint.yaml
+  s_e08c290cfdeacc::t_4720260f0c1778 14-24
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "95aaaee04348d20afd075e62ed8ff131fbb118ef",
+  "prompts": {},
+  "sessions": {
+    "s_e08c290cfdeacc": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a14e81-48ad-7c13-ab0a-c14241945059",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "github-actions[bot] <github-actions[bot]@users.noreply.github.com>"
+    }
+  }
+}

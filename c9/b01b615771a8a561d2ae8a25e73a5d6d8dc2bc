@@ -1,0 +1,25 @@
+.github/workflows/deploy-backend.yaml
+  s_4fb4393eff17a7::t_22776fdbf758dc 358-362
+.github/workflows/deploy-cloudrun.yaml
+  s_4fb4393eff17a7::t_2b6b8e256169f8 194-198
+.github/workflows/deploy-static-website.yaml
+  s_4fb4393eff17a7::t_43a88087b74d4d 884-888
+.github/workflows/discord-notify.yaml
+  s_4fb4393eff17a7::t_4efc83e344c7c0 122-123,408
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "c9b01b615771a8a561d2ae8a25e73a5d6d8dc2bc",
+  "prompts": {},
+  "sessions": {
+    "s_4fb4393eff17a7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f4d34e26-752c-4de0-b0eb-3b816dce2681",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "github-actions[bot] <github-actions[bot]@users.noreply.github.com>"
+    }
+  }
+}
