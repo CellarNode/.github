@@ -61,16 +61,19 @@ env:
 
 jobs:
   preview-policy:
-    # Metadata-only job: it never checks out or runs pull-request code. Fork
-    # pull_request_target events stay on GitHub-hosted so outside contributors
-    # cannot consume the small cluster runner pool.
+    # Metadata-only job: it never checks out or runs pull-request code. Only
+    # private repositories use the cluster pool, and fork pull_request_target
+    # events stay on GitHub-hosted so outside contributors cannot consume the
+    # small runner pool.
     runs-on: >-
-      ${{ (github.event_name == 'push' ||
+      ${{ github.event.repository.private == true &&
+          (github.event_name == 'push' ||
            (github.event_name == 'pull_request_target' &&
             github.event.pull_request.head.repo.full_name == github.repository)) &&
           'self-hosted-k8s' || 'ubuntu-latest' }}
     container: >-
-      ${{ (github.event_name == 'push' ||
+      ${{ github.event.repository.private == true &&
+          (github.event_name == 'push' ||
            (github.event_name == 'pull_request_target' &&
             github.event.pull_request.head.repo.full_name == github.repository)) &&
           'europe-north1-docker.pkg.dev/festive-terrain-478011-h0/beveriq/ci-runner@sha256:b8ae250c5d7fae79dbbea1f62ca7613ecabd6f3efbd13b533cbdecb293cdf814'
@@ -118,13 +121,16 @@ jobs:
           if [ "$EVENT_NAME" = "pull_request_target" ] &&
             [ "$same_repository" = "true" ] &&
             [ "$actor_matches_author" = "true" ]; then
-            # The ARC runner image has curl and jq but no gh CLI; with pipefail a
-            # failed lookup aborts the step, so the policy still fails closed.
-            permission="$(curl --fail --silent --show-error --globoff \
-              -H "Authorization: Bearer ${GH_TOKEN}" \
-              -H "Accept: application/vnd.github+json" \
-              -H "X-GitHub-Api-Version: 2022-11-28" \
-              "https://api.github.com/repos/${REPOSITORY}/collaborators/${ACTOR}/permission" |
+            # The ARC runner image has curl and jq but no gh CLI. The token goes to
+            # curl on stdin (printf is a builtin) so it never appears in argv. With
+            # pipefail a lookup that still fails after the retries aborts the
+            # step, so the policy fails closed.
+            permission="$(printf 'header = "Authorization: Bearer %s"\n' "$GH_TOKEN" |
+              curl --config - --fail --silent --show-error --globoff \
+                --max-time 30 --retry 2 \
+                -H "Accept: application/vnd.github+json" \
+                -H "X-GitHub-Api-Version: 2022-11-28" \
+                "https://api.github.com/repos/${REPOSITORY}/collaborators/${ACTOR}/permission" |
               jq -r .permission)"
             case "$permission" in
               admin|maintain|write) permission_allowed=true ;;
@@ -149,11 +155,11 @@ jobs:
   build-preview:
     needs: preview-policy
     if: needs.preview-policy.outputs.trusted == 'true'
-    # Only reached for same-repository pull requests whose author currently has
-    # write access (see preview-policy); fork code never gets this runner.
-    runs-on: self-hosted-k8s
-    container:
-      image: europe-north1-docker.pkg.dev/festive-terrain-478011-h0/beveriq/ci-runner@sha256:b8ae250c5d7fae79dbbea1f62ca7613ecabd6f3efbd13b533cbdecb293cdf814
+    # CEL-2768: previews stay GitHub-hosted and are not needed while the hosted
+    # budget is exhausted. Do not move this job to the cluster pool: it runs
+    # unmerged pull-request lifecycle scripts, and every pool pod carries the
+    # buildkitd client certificate.
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       pull-requests: read
