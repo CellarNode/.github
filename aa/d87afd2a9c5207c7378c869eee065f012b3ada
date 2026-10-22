@@ -1,0 +1,19 @@
+.github/workflows/deploy-static-website.yaml
+  s_aea13dd997c75d::t_ba9eb59bc88808 773-782
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "aad87afd2a9c5207c7378c869eee065f012b3ada",
+  "prompts": {},
+  "sessions": {
+    "s_aea13dd997c75d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e0797d06-4a6f-471f-9ab1-dc75510dd757",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "github-actions[bot] <github-actions[bot]@users.noreply.github.com>"
+    }
+  }
+}
