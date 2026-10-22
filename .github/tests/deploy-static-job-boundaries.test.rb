@@ -430,7 +430,7 @@ website_cases.each do |name, (website, expected)|
 end
 
 bucket = workflow.fetch("env").fetch("GCS_BUCKET")
-site_prefix = /\Ags:\/\/\$\{GCS_BUCKET\}\/\$\{WEBSITE\}\/?\z/
+site_prefix = /\Ags:\/\/\$\{GCS_BUCKET\}\/\$\{WEBSITE\}\/\z/
 deploy_runs = deploy_steps.map { |step| [step.fetch("name", step.fetch("uses", "")), step.fetch("run", "").lines.reject { |line| line.lstrip.start_with?("#") }.join] }.reject { |_name, run| run.empty? }
 production_gcloud_calls = deploy_runs.flat_map { |_name, run| run.scan(/(?<![\w-])gcloud\s+(?!warm-up)(?:\S+)\s+(?:\S+)/) }
 abort "Production path must run gcloud storage ls and rsync, got #{production_gcloud_calls.inspect}" unless production_gcloud_calls.length == 2
@@ -438,7 +438,7 @@ abort "Production path may only run gcloud storage ls and rsync" unless producti
 abort "Production path must not use gsutil or gcloud storage cp/rm/mv/buckets" if deploy_runs.any? { |_name, run| run.match?(/gsutil|gcloud storage (?:cp|rm|mv|buckets|objects)/) }
 bucket_urls = deploy_runs.flat_map { |_name, run| run.scan(%r{gs://[^\s"']*}) }
 abort "Production path must reference the bucket by URL" if bucket_urls.empty?
-abort "Production gcloud commands must stay within gs://${GCS_BUCKET}/${WEBSITE}/, got #{bucket_urls.reject { |url| url.match?(site_prefix) }.inspect}" unless bucket_urls.all? { |url| url.match?(site_prefix) }
+abort "Production gcloud targets must be exactly gs://${GCS_BUCKET}/${WEBSITE}/, got #{bucket_urls.reject { |url| url.match?(site_prefix) }.inspect}" unless bucket_urls.all? { |url| url.match?(site_prefix) }
 abort "Production path must not hard-code a bucket or prefix" if deploy_runs.any? { |_name, run| run.include?(bucket) || run.include?("preview/") }
 
 # Parallel composite uploads write temporary objects outside the site prefix, so they must stay off.
@@ -512,7 +512,7 @@ Dir.mktmpdir do |directory|
   stub_gcloud.call(0, "")
   _out, err, status = run_step.call("Deploy to production", posix)
   abort "Deploy step must succeed with a working gcloud: #{err}" unless status.success?
-  abort "Deploy must rsync ./dist into the site prefix only, got #{File.read(log).inspect}" unless File.read(log).match?(%r{\Astorage rsync .* \./dist gs://#{Regexp.escape(bucket)}/admin\.cellarnode\.com\n\z})
+  abort "Deploy must rsync ./dist into the site prefix only, got #{File.read(log).inspect}" unless File.read(log).match?(%r{\Astorage rsync .* \./dist gs://#{Regexp.escape(bucket)}/admin\.cellarnode\.com/\n\z})
 end
 
 # Previews are untouched by CEL-2768: they keep the artifact hand-off and their existing identity.

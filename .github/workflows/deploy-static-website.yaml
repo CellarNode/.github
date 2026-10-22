@@ -746,7 +746,7 @@ jobs:
             exit 1
           fi
           gcloud storage rsync --recursive --ignore-symlinks --checksums-only --delete-unmatched-destination-objects \
-            ./dist "gs://${GCS_BUCKET}/${WEBSITE}"
+            ./dist "gs://${GCS_BUCKET}/${WEBSITE}/"
 
   deploy-preview:
     needs: [preview-policy, build-preview]
