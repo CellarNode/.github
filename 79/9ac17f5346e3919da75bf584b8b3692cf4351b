@@ -1,0 +1,26 @@
+.github/tests/deploy-static-token-job.test.rb
+  s_aea13dd997c75d::t_6842731738c53b 1-82,84-103
+  s_aea13dd997c75d::t_7843ce44bdbd8f 83
+.github/tests/deploy-static-job-boundaries.test.rb
+  s_aea13dd997c75d::t_a98346cda6705b 356-357
+.github/workflows/deploy-static-website.yaml
+  s_aea13dd997c75d::t_cd19c33348f11f 584-586,591-592,621-623,629-631,636-638,643-644,651-652,668-669,678-681,686-687,694-695,702-703,722-724,736-737,744-745,766-767
+.github/workflows/validate-static-deploy.yaml
+  s_aea13dd997c75d::t_622cffa93fc456 8,18,42-44
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "799ac17f5346e3919da75bf584b8b3692cf4351b",
+  "prompts": {},
+  "sessions": {
+    "s_aea13dd997c75d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e0797d06-4a6f-471f-9ab1-dc75510dd757",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "github-actions[bot] <github-actions[bot]@users.noreply.github.com>"
+    }
+  }
+}
