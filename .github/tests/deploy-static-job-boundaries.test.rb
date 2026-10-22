@@ -318,7 +318,18 @@ abort "Production deploy must use the pinned ci-runner image" unless deploy_prod
 abort "Production deploy must only run for pushes to main" unless deploy_production.fetch("if").include?("github.event_name == 'push'") && deploy_production.fetch("if").include?("github.ref == 'refs/heads/main'")
 abort "Production deploy must depend only on the toolchain policy" unless Array(deploy_production.fetch("needs")) == ["preview-policy"]
 abort "Production deploy must require approved toolchain" unless deploy_production.fetch("if").include?("needs.preview-policy.outputs.toolchain_allowed == 'true'")
-abort "Production deploy permissions must be exactly contents: read and id-token: write" unless deploy_production.fetch("permissions") == { "contents" => "read", "id-token" => "write" }
+abort "Production deploy permissions must be exactly contents: read and id-token: write" unless deploy_production["permissions"] == { "contents" => "read", "id-token" => "write" }
+# Build code runs in this job, so it must not be able to start another run (workflow_dispatch needs
+# actions: write; repository_dispatch or a workflow-triggering push needs contents: write) and so
+# escape the per-site identity. The job block replaces, not extends, any workflow-level permissions.
+forbidden_scopes = %w[actions checks deployments discussions issues packages pages pull-requests repository-projects security-events statuses attestations models]
+production_permissions = deploy_production["permissions"]
+abort "Production job permissions must be an explicit mapping, not a shorthand" unless production_permissions.is_a?(Hash)
+abort "Production job must hold only contents: read and id-token: write, got #{production_permissions.inspect}" unless production_permissions.keys.sort == %w[contents id-token] && production_permissions.fetch("contents") == "read" && production_permissions.fetch("id-token") == "write"
+abort "Production job must not grant #{forbidden_scopes & production_permissions.keys}" unless (forbidden_scopes & production_permissions.keys).empty?
+workflow_permissions = workflow["permissions"]
+abort "Workflow-level permissions must not grant write access (got #{workflow_permissions.inspect})" if workflow_permissions.is_a?(String) ? workflow_permissions.match?(/write/) : Array(workflow_permissions&.values).any? { |level| level == "write" }
+abort "Production job must not read a repository secret or the job token itself" if deep_string_values(deploy_production).any? { |value| value.match?(/secrets\.|github\.token|GITHUB_TOKEN/) }
 
 deploy_steps = deploy_production.fetch("steps")
 artifact_or_cache = /\A(?:actions\/(?:upload-artifact|download-artifact|cache(?:\/[a-z-]+)?)|[^@]*\/(?:upload-artifact|download-artifact))@/
