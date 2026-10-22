@@ -214,10 +214,14 @@ abort "Preview authorization recheck must not receive NPM_TOKEN" if preview_auth
 abort "Preview authorization recheck must use pinned GitHub Script" unless preview_authorization.fetch("uses", "").match?(/\Aactions\/github-script@[0-9a-f]{40}\z/)
 abort "Preview authorization recheck must use the job token" unless preview_authorization.fetch("with", {}).fetch("github-token", nil) == "${{ github.token }}"
 
-%w[build-preview build-production].each do |job_name|
+# CEL-2768: preview still hands off through an artifact; production hands off through the cache.
+{
+  "build-preview" => "Upload static site artifact",
+  "build-production" => "Pack static site tarball",
+}.each do |job_name, handoff_step|
   steps = jobs.fetch(job_name).fetch("steps")
   validation_index = steps.index { |step| step.fetch("name", "") == "Reject non-regular build outputs" }
-  upload_index = steps.index { |step| step.fetch("name", "") == "Upload static site artifact" }
+  upload_index = steps.index { |step| step.fetch("name", "") == handoff_step }
   abort "#{job_name} must validate build outputs before upload" unless validation_index && upload_index && validation_index < upload_index
 
   validation = steps.fetch(validation_index).fetch("run")
@@ -311,6 +315,89 @@ abort "Production build must require approved toolchain" unless build_production
 
 deploy_production = jobs.fetch("deploy-production")
 abort "Production deploy must use the self-hosted runner" unless deploy_production.fetch("runs-on") == "self-hosted-k8s"
+
+# CEL-2768: production hands the build to the deploy job through an exact-key Actions cache entry
+# bound by a SHA-256 job output, because artifact storage is blocked org-wide.
+CACHE_ACTION_SHA = "0057852bfaa89a56745cba8c7296529d2fc39830".freeze
+deploy_steps = deploy_production.fetch("steps")
+production_steps = build_production.fetch("steps") + deploy_steps
+production_actions = production_steps.map { |step| step.fetch("uses", "") }
+abort "Production path must not use upload-artifact or download-artifact (CEL-2768)" if production_actions.any? { |action| action.match?(%r{\Aactions/(upload|download)-artifact@}) }
+abort "Production path must not reference an artifact action anywhere in its steps" if deep_string_values(production_steps).any? { |value| value.match?(%r{actions/(upload|download)-artifact}) }
+
+build_steps = build_production.fetch("steps")
+pack_index = build_steps.index { |step| step.fetch("id", "") == "pack" }
+save_index = build_steps.index { |step| step.fetch("uses", "").start_with?("actions/cache/save@") }
+abort "Production build must pack a tarball and then save it to the cache" unless pack_index && save_index && pack_index < save_index
+pack_step = build_steps.fetch(pack_index)
+save_step = build_steps.fetch(save_index)
+deploy_restore_index = deploy_steps.index { |step| step.fetch("uses", "").start_with?("actions/cache/restore@") }
+abort "Production deploy must restore the tarball from the cache" unless deploy_restore_index
+restore_step = deploy_steps.fetch(deploy_restore_index)
+
+[save_step, restore_step].each do |step|
+  abort "Cache actions must be pinned to the reviewed full commit SHA: #{step.fetch("uses")}" unless step.fetch("uses").match?(/\Aactions\/cache\/(save|restore)@#{CACHE_ACTION_SHA}( #.*)?\z/)
+  abort "Cache steps must not use restore-keys (exact key only)" if step.fetch("with").key?("restore-keys")
+  abort "Cache steps must only cache the tarball" unless step.fetch("with").fetch("path") == "static-site.tar"
+end
+
+pack_script = pack_step.fetch("run")
+abort "Pack step must key the entry on run_id and run_attempt" unless pack_step.fetch("env").values_at("RUN_ID", "RUN_ATTEMPT") == ["${{ github.run_id }}", "${{ github.run_attempt }}"]
+abort "Cache key must combine slug, run id and run attempt" unless pack_script.include?('cache_key=static-site-${WEBSITE_SLUG}-${RUN_ID}-${RUN_ATTEMPT}')
+abort "Pack step must create a deterministic tarball" unless pack_script.include?("tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner")
+abort "Pack step must record the tarball SHA-256" unless pack_script.include?("sha256sum static-site.tar") && pack_script.include?('echo "tarball_sha256=${tarball_sha256}"') && pack_script.include?('>> "$GITHUB_OUTPUT"')
+abort "Build job must expose the cache key and tarball hash as outputs" unless build_production.fetch("outputs") == {
+  "cache_key" => "${{ steps.pack.outputs.cache_key }}",
+  "tarball_sha256" => "${{ steps.pack.outputs.tarball_sha256 }}",
+}
+abort "Cache save must use the key computed by the pack step" unless save_step.fetch("with").fetch("key") == "${{ steps.pack.outputs.cache_key }}"
+abort "Cache restore must use the exact key the build job published" unless restore_step.fetch("with").fetch("key") == "${{ needs.build-production.outputs.cache_key }}"
+abort "Cache restore must fail on a miss" unless restore_step.fetch("with").fetch("fail-on-cache-miss") == true
+
+verify_index = deploy_steps.index { |step| step.fetch("name", "") == "Verify static site tarball hash" }
+extract_index = deploy_steps.index { |step| step.fetch("name", "") == "Extract static site tarball" }
+reject_index = deploy_steps.index { |step| step.fetch("name", "") == "Reject non-regular artifact entries" }
+oidc_index = deploy_steps.index { |step| step.fetch("name", "") == "Authenticate to Google Cloud" }
+abort "Production deploy must restore, verify, extract, reject non-regular entries, then authenticate (in that order)" unless [deploy_restore_index, verify_index, extract_index, reject_index, oidc_index].all? && [deploy_restore_index, verify_index, extract_index, reject_index, oidc_index] == [deploy_restore_index, verify_index, extract_index, reject_index, oidc_index].sort
+verify_step = deploy_steps.fetch(verify_index)
+abort "Hash verification must compare against the build job output" unless verify_step.fetch("env").fetch("EXPECTED_SHA256") == "${{ needs.build-production.outputs.tarball_sha256 }}"
+extract_step = deploy_steps.fetch(extract_index)
+abort "Extraction must write to dist (the path the deploy step syncs)" unless extract_step.fetch("run").include?("tar -xf static-site.tar -C dist")
+
+# Run the real verify step: matching hash passes, anything else fails closed.
+Dir.mktmpdir do |directory|
+  File.write(File.join(directory, "static-site.tar"), "tarball bytes")
+  good = Open3.capture3("sha256sum", File.join(directory, "static-site.tar")).first.split.first
+  {
+    "matching hash" => [good, true],
+    "different hash" => ["0" * 64, false],
+    "empty hash" => ["", false],
+    "malformed hash" => ["not-a-hash", false],
+  }.each do |name, (expected, accepted)|
+    _stdout, _stderr, status = Open3.capture3({ "EXPECTED_SHA256" => expected }, "bash", "-c", verify_step.fetch("run"), chdir: directory)
+    abort "tarball verification #{name}: expected accepted=#{accepted}, got #{status.success?}" unless status.success? == accepted
+  end
+end
+
+# Run the real pack step and prove the tarball is deterministic (GNU tar only; skipped on bsdtar).
+Dir.mktmpdir do |directory|
+  if system("tar --version 2>/dev/null | grep -q 'GNU tar'")
+    Dir.mkdir(File.join(directory, "dist"))
+    File.write(File.join(directory, "dist", "index.html"), "safe")
+    hashes = 2.times.map do |attempt|
+      output_file = File.join(directory, "output-#{attempt}")
+      File.write(output_file, "")
+      _stdout, stderr, status = Open3.capture3(
+        { "GITHUB_OUTPUT" => output_file, "WEBSITE_SLUG" => "site", "RUN_ID" => "1", "RUN_ATTEMPT" => "1" },
+        "bash", "-c", pack_script, chdir: directory
+      )
+      abort "pack step failed: #{stderr}" unless status.success?
+      File.utime(Time.now + attempt * 3600, Time.now + attempt * 3600, File.join(directory, "dist", "index.html"))
+      File.read(output_file)[/tarball_sha256=(\h{64})/, 1]
+    end
+    abort "pack step must be deterministic across mtime changes" unless hashes.compact.uniq.length == 1
+  end
+end
 
 deploy_steps = deploy_production.fetch("steps")
 abort "Production deploy must not check out source" if deploy_steps.any? { |step| step.fetch("uses", "").start_with?("actions/checkout@") }

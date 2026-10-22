@@ -559,6 +559,9 @@ jobs:
       github.ref == 'refs/heads/main' &&
       needs.preview-policy.outputs.toolchain_allowed == 'true'
     runs-on: self-hosted-k8s
+    outputs:
+      cache_key: ${{ steps.pack.outputs.cache_key }}
+      tarball_sha256: ${{ steps.pack.outputs.tarball_sha256 }}
     container:
       image: europe-north1-docker.pkg.dev/festive-terrain-478011-h0/beveriq/ci-runner@sha256:b8ae250c5d7fae79dbbea1f62ca7613ecabd6f3efbd13b533cbdecb293cdf814
     permissions:
@@ -651,13 +654,32 @@ jobs:
             exit 1
           fi
 
-      - name: Upload static site artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      # CEL-2768: artifact storage is blocked org-wide, so the credential-free build hands the
+      # output to the deploy job through an exact-key Actions cache entry. The deploy job
+      # recomputes the tarball SHA-256 and compares it with this job's output before extracting.
+      - name: Pack static site tarball
+        id: pack
+        shell: bash
+        env:
+          WEBSITE_SLUG: ${{ inputs.website_slug }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
+            -cf static-site.tar -C dist .
+          tarball_sha256="$(sha256sum static-site.tar | cut -d ' ' -f 1)"
+          [[ "$tarball_sha256" =~ ^[0-9a-f]{64}$ ]]
+          {
+            echo "tarball_sha256=${tarball_sha256}"
+            echo "cache_key=static-site-${WEBSITE_SLUG}-${RUN_ID}-${RUN_ATTEMPT}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Save static site tarball to cache
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
-          name: static-site-${{ inputs.website_slug }}
-          path: dist
-          if-no-files-found: error
-          retention-days: 1
+          path: static-site.tar
+          key: ${{ steps.pack.outputs.cache_key }}
 
   deploy-production:
     needs: build-production
@@ -670,11 +692,34 @@ jobs:
       id-token: write
 
     steps:
-      - name: Download static site artifact
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      # The key is the build job's output (not recomputed here) so "re-run failed jobs" still
+      # finds the entry saved by the first attempt, while the hash binds it to that exact build.
+      - name: Restore static site tarball from cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
-          name: static-site-${{ inputs.website_slug }}
-          path: dist
+          path: static-site.tar
+          key: ${{ needs.build-production.outputs.cache_key }}
+          fail-on-cache-miss: true
+
+      - name: Verify static site tarball hash
+        shell: bash
+        env:
+          EXPECTED_SHA256: ${{ needs.build-production.outputs.tarball_sha256 }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          actual_sha256="$(sha256sum static-site.tar | cut -d ' ' -f 1)"
+          if [ "$actual_sha256" != "$EXPECTED_SHA256" ]; then
+            echo "Static site tarball hash mismatch" >&2
+            exit 1
+          fi
+
+      - name: Extract static site tarball
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir dist
+          tar -xf static-site.tar -C dist --no-same-owner
 
       - name: Reject non-regular artifact entries
         shell: bash
