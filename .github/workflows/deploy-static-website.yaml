@@ -562,8 +562,12 @@ jobs:
   # Nothing mints a Google token until the build and the output checks have finished, but that
   # ordering is defence in depth, not a boundary: code that runs during the build can also request
   # an OIDC token while id-token: write is granted. The boundary is the per-site deploy service
-  # account (caller input deploy_service_account): it can write one bucket, never the shared
-  # pipelines identity, so the worst case equals today's baseline of publishing a poisoned dist.
+  # account (caller input deploy_service_account) together with the pipelines exclusion in
+  # crossplane-gcloud#160: the account can write only its own site prefix, and nothing that can
+  # produce this job's token may impersonate pipelines. Neither is enforced in this file. Not
+  # covered here: job pods on the pool carry the shared buildkitd client certificate, so build code
+  # in this job can reach that daemon. That exposure predates this change and is tracked in a
+  # separate CEL ticket.
   deploy-production:
     needs: preview-policy
     if: >-
@@ -734,7 +738,14 @@ jobs:
           CLOUDSDK_STORAGE_PARALLEL_COMPOSITE_UPLOAD_ENABLED: 'False'
           WEBSITE: ${{ inputs.website }}
         run: |
-          gcloud storage rsync --recursive --checksums-only --delete-unmatched-destination-objects \
+          # Re-run the build-output check right before uploading: a process left running by the
+          # build could have recreated a symlink or special file since the earlier check.
+          test -d dist
+          if find dist \( -type l -o -type b -o -type c -o -type p -o -type s \) -print -quit | grep -q .; then
+            echo "Static artifact contains a non-regular entry" >&2
+            exit 1
+          fi
+          gcloud storage rsync --recursive --ignore-symlinks --checksums-only --delete-unmatched-destination-objects \
             ./dist "gs://${GCS_BUCKET}/${WEBSITE}"
 
   deploy-preview:

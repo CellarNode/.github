@@ -446,6 +446,23 @@ production_publish_env = deploy_steps.fetch(publish_index).fetch("env", {})
 abort "Production rsync must disable parallel composite uploads (they write outside the site prefix)" unless production_publish_env.fetch("CLOUDSDK_STORAGE_PARALLEL_COMPOSITE_UPLOAD_ENABLED", nil) == "False"
 abort "Production path must not re-enable composite uploads through gcloud config" if deploy_runs.any? { |_name, run| run.match?(/parallel_composite_upload/i) }
 
+# The security comment must not overstate the boundary (CEL-2768 review): the per-site account plus the
+# pipelines exclusion in crossplane-gcloud#160, and the shared-buildkitd exposure named, not hidden.
+workflow_text = File.read(workflow_path)
+abort "The production job comment must not claim the worst case equals the poisoned-dist baseline" if workflow_text.match?(/worst case equals/i)
+abort "The production job comment must name the pipelines exclusion in crossplane-gcloud#160" unless workflow_text.include?("crossplane-gcloud#160") && workflow_text.include?("pipelines exclusion")
+abort "The production job comment must name the shared buildkitd exposure" unless workflow_text.match?(/shared buildkitd client certificate/)
+
+# The rsync never follows symlinks, and the output check is repeated in the same step right before it
+# (a process left running by the build could recreate a symlink after the earlier check).
+publish_run = deploy_steps.fetch(publish_index).fetch("run")
+abort "Production rsync must pass --ignore-symlinks" unless publish_run.match?(/gcloud storage rsync\b[^\n]*--ignore-symlinks/)
+abort "Production rsync must not re-enable symlink following" if publish_run.include?("--no-ignore-symlinks")
+publish_check_index = publish_run.index("find dist \\( -type l")
+publish_rsync_index = publish_run.index("gcloud storage rsync")
+abort "Production deploy step must repeat the non-regular output check before the rsync" unless publish_check_index && publish_check_index < publish_rsync_index
+abort "Production deploy step check must match the build-output check" unless publish_run.include?(deploy_steps.fetch(outputs_index).fetch("run").lines.map(&:strip).reject(&:empty?)[1..].first)
+
 # Execute the warm-up and deploy steps against a recording gcloud to prove the real targets.
 Dir.mktmpdir do |directory|
   File.write(File.join(directory, "sleep"), "#!/bin/sh\nexit 0\n")
@@ -484,6 +501,13 @@ Dir.mktmpdir do |directory|
   _out, _err, status = run_step.call("Warm gcloud credential cache", posix)
   abort "Warm-up must fail closed when listing the site prefix is denied" if status.success?
   abort "Warm-up must retry five times before failing" unless File.read(log).lines.length == 5
+
+  stub_gcloud.call(0, "")
+  File.symlink("/proc/self/environ", File.join(directory, "dist", "environment.txt"))
+  _out, _err, status = run_step.call("Deploy to production", posix)
+  abort "Deploy step must refuse a symlink that appears after the earlier check" if status.success?
+  abort "Deploy step must not call gcloud when dist holds a non-regular entry, got #{File.read(log).inspect}" unless File.read(log).empty?
+  File.delete(File.join(directory, "dist", "environment.txt"))
 
   stub_gcloud.call(0, "")
   _out, err, status = run_step.call("Deploy to production", posix)
