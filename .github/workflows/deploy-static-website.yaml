@@ -783,6 +783,221 @@ jobs:
           gcloud storage rsync --recursive --ignore-symlinks --checksums-only --delete-unmatched-destination-objects \
             ./dist "gs://${GCS_BUCKET}/${WEBSITE}/"
 
+      # CEL-2795: the deploy notification is the LAST STEP of the job that ends the run, not a separate `discord-deploy` job. That job queued
+      # for one of the 2 pool runners after the deploy had finished, and this workflow's concurrency group (static-deploy-<slug>-<ref>) is
+      # held until every job of the run ends, so the next push to main for the same site waited behind it. continue-on-error: a notification
+      # problem must never fail the deploy. always(): a deploy that fails, times out or is cancelled while running must still say so; a
+      # superseded run never gets here (a pending run is cancelled before it starts). The webhook secret reaches only this step, and the
+      # OIDC variables are blanked here like in every step except Authenticate. The job token has no pull-requests scope (see the
+      # permissions above), so the merged-PR and thread lookup degrades to the commit message and a standalone deploy thread.
+      - name: Discord deploy notification
+        if: ${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        continue-on-error: true
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        env:
+          ACTIONS_ID_TOKEN_REQUEST_URL: ""
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ""
+          WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          EVENT: deploy
+          STATUS: ${{ job.status }}
+          DEPLOY_MODE: deployed
+          IMAGE_TAG: ""
+          TAGS: ${{ inputs.discord_tags }}
+        with:
+          # The deploy-only subset of discord-notify.yaml's script, verbatim (tests/discord-deploy-in-job tests keep the two in sync).
+          script: |
+            const rawWebhook = process.env.WEBHOOK_URL;
+            if (rawWebhook) core.setSecret(rawWebhook);
+            const webhook = rawWebhook?.replace(/\/+$/, '');
+            if (webhook) core.setSecret(webhook);
+            if (!webhook) {
+              core.warning('DISCORD_WEBHOOK_URL not set, skipping');
+              return;
+            }
+
+            const event = process.env.EVENT;
+            const status = process.env.STATUS;
+            const previewUrl = process.env.PREVIEW_URL;
+            const repo = context.repo.repo;
+            const actor = context.actor;
+            const sha = context.sha.substring(0, 7);
+            const ref = context.ref.replace('refs/heads/', '');
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${repo}/actions/runs/${context.runId}`;
+            const repoUrl = `${context.serverUrl}/${context.repo.owner}/${repo}`;
+
+            // Forum tag name → ID map
+            const TAG_MAP = {
+              backend:  '1484207128288694443',
+              admin:    '1484207163252674630',
+              importer: '1484207182508589158',
+              producer: '1484207205149573181',
+              infra:    '1484207231728881765',
+            };
+
+            const appliedTags = (process.env.TAGS || '')
+              .split(',')
+              .map(t => TAG_MAP[t.trim()])
+              .filter(Boolean);
+
+            const META_TAG = '<!-- discord-metadata:';
+            const discordSnowflake = /^\d{17,20}$/;
+            const allowedMetadataKeys = new Set(['threadId', 'openMessageId', 'buildMessageId']);
+
+            function parseMetadata(body) {
+              const match = body.match(/^<!-- discord-metadata:(\{.*\})-->$/s);
+              if (!match) return null;
+
+              try {
+                const metadata = JSON.parse(match[1]);
+                if (!metadata || Array.isArray(metadata) || typeof metadata !== 'object') return null;
+
+                const entries = Object.entries(metadata);
+                if (entries.some(([key, value]) => !allowedMetadataKeys.has(key) || typeof value !== 'string' || !discordSnowflake.test(value))) {
+                  return null;
+                }
+                return metadata;
+              } catch {
+                return null;
+              }
+            }
+
+            async function discordPost(payload, threadId) {
+              const params = new URLSearchParams({ wait: 'true' });
+              if (threadId) params.set('thread_id', threadId);
+
+              const res = await fetch(`${webhook}?${params}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+              });
+
+              if (!res.ok) {
+                core.warning(`Discord POST failed: ${res.status}`);
+                return null;
+              }
+              return res.json();
+            }
+
+            if (event === 'deploy') {
+              // CEL-2322: `published` = built and pushed only; a pull-model controller rolls it out later (and may fail),
+              // so it gets its own wording, emoji and colour, never "Deployed to production".
+              const published = process.env.DEPLOY_MODE === 'published';
+              const imageTag = process.env.IMAGE_TAG || sha;
+              const color = published
+                ? (status === 'success' ? 3447003 : status === 'failure' ? 15158332 : 10070709)
+                : (status === 'success' ? 3066993 : status === 'failure' ? 15158332 : 10070709);
+              const emoji = published
+                ? (status === 'success' ? '📦' : status === 'failure' ? '❌' : '⚠️')
+                : (status === 'success' ? '✅' : status === 'failure' ? '❌' : '⚠️');
+              const deployTitle = published
+                ? (status === 'success' ? `Image published (\`${imageTag}\`); Image Updater will roll it out` : 'Image build failed')
+                : 'Deployed to production';
+
+              const compareUrl = `${repoUrl}/compare/${context.payload.before?.substring(0, 7)}...${sha}`;
+
+              // Find the merged PR — get thread ID and body for changelog
+              let threadId = null;
+              let changelog = '';
+              let prTitle = '';
+              let prUrl = '';
+              try {
+                const { data: prs } = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  commit_sha: context.sha
+                });
+                const merged = prs.find(pr => pr.merged_at);
+                if (merged) {
+                  prTitle = merged.title;
+                  prUrl = merged.html_url;
+                  if (merged.body) {
+                    changelog = merged.body
+                      .replace(/<!--[\s\S]*?-->/g, '')
+                      .trim();
+                    if (changelog.length > 3500) {
+                      changelog = changelog.substring(0, 3500) + '…';
+                    }
+                  }
+
+                  const comments = await github.paginate(github.rest.issues.listComments, {
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: merged.number,
+                    per_page: 100
+                  });
+                  for (const c of comments) {
+                    if (c.user?.login !== 'github-actions[bot]') continue;
+                    const metadata = parseMetadata(c.body ?? '');
+                    if (metadata?.threadId) {
+                      threadId = metadata.threadId;
+                      break;
+                    }
+                  }
+                }
+              } catch {}
+
+              // Get commit message for direct pushes (no PR)
+              let commitMsg = '';
+              if (!changelog) {
+                try {
+                  const { data: commit } = await github.rest.repos.getCommit({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    ref: context.sha
+                  });
+                  commitMsg = commit.commit.message.trim();
+                  if (commitMsg.length > 3500) {
+                    commitMsg = commitMsg.substring(0, 3500) + '…';
+                  }
+                } catch {}
+              }
+
+              const changeText = changelog || commitMsg;
+              const deployDescription = changeText
+                ? `${changeText}\n\n\`${sha}\` by ${actor}`
+                : `\`${sha}\` by ${actor}`;
+
+              if (threadId) {
+                await discordPost({
+                  embeds: [{
+                    title: `${emoji} ${deployTitle}`,
+                    url: runUrl,
+                    description: deployDescription,
+                    color,
+                    footer: { text: `${repo} • ${ref}` },
+                    timestamp: new Date().toISOString()
+                  }],
+                  components: [{
+                    type: 1,
+                    components: [
+                      { type: 2, style: 5, label: "View Run", url: runUrl },
+                      { type: 2, style: 5, label: "Compare Changes", url: compareUrl }
+                    ]
+                  }]
+                }, threadId);
+              } else {
+                await discordPost({
+                  embeds: [{
+                    title: `${emoji} ${deployTitle} — ${repo}`,
+                    url: runUrl,
+                    description: deployDescription,
+                    color,
+                    footer: { text: `${repo} • ${ref}` },
+                    timestamp: new Date().toISOString()
+                  }],
+                  components: [{
+                    type: 1,
+                    components: [
+                      { type: 2, style: 5, label: "View Run", url: runUrl },
+                      { type: 2, style: 5, label: "Compare Changes", url: compareUrl }
+                    ]
+                  }],
+                  thread_name: `${emoji} ${repo} deploy — ${sha}`,
+                  ...(appliedTags.length && { applied_tags: appliedTags })
+                });
+              }
+            }
+
   deploy-preview:
     needs: [preview-policy, build-preview]
     if: needs.preview-policy.outputs.trusted == 'true'
@@ -1016,18 +1231,3 @@ jobs:
     with:
       event: thread_close
       status: ${{ github.event.pull_request.merged && 'merged' || 'closed' }}
-
-  discord-deploy:
-    needs: deploy-production
-    # CEL-2795: !cancelled(), not always(): a cancelled run must not wait for a runner just to post a notification (it would keep the run, and any concurrency group it is in, alive). Failures still notify.
-    if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-    permissions:
-      contents: read
-      pull-requests: read
-    uses: ./.github/workflows/discord-notify.yaml
-    secrets:
-      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-    with:
-      event: deploy
-      status: ${{ needs.deploy-production.result }}
-      tags: ${{ inputs.discord_tags }}

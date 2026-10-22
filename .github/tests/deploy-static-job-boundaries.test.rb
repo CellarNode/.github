@@ -329,7 +329,16 @@ abort "Production job must hold only contents: read and id-token: write, got #{p
 abort "Production job must not grant #{forbidden_scopes & production_permissions.keys}" unless (forbidden_scopes & production_permissions.keys).empty?
 workflow_permissions = workflow["permissions"]
 abort "Workflow-level permissions must not grant write access (got #{workflow_permissions.inspect})" if workflow_permissions.is_a?(String) ? workflow_permissions.match?(/write/) : Array(workflow_permissions&.values).any? { |level| level == "write" }
-abort "Production job must not read a repository secret or the job token itself" if deep_string_values(deploy_production).any? { |value| value.match?(/secrets\.|github\.token|GITHUB_TOKEN/) }
+# CEL-2795: the ONE exception is the Discord webhook, in the env of the LAST step (the deploy notification), so the run ends when the
+# deploy ends instead of waiting for a separate notify job. Nothing else in the job may read a secret or the job token.
+secret_pattern = /secrets\.|github\.token|GITHUB_TOKEN/
+production_steps_list = deploy_production.fetch("steps")
+notify_step = production_steps_list.last
+abort "The last production step must be the Discord deploy notification" unless notify_step.fetch("name", "") == "Discord deploy notification"
+abort "Production job must not read a repository secret or the job token itself (outside the notify step)" if deep_string_values(deploy_production.merge("steps" => production_steps_list[0...-1])).any? { |value| value.match?(secret_pattern) }
+abort "The notify step may read only the Discord webhook secret, and only through its env" unless deep_string_values(notify_step.fetch("env")).grep(secret_pattern) == ["${{ secrets.DISCORD_WEBHOOK_URL }}"] && notify_step.fetch("env").fetch("WEBHOOK_URL") == "${{ secrets.DISCORD_WEBHOOK_URL }}"
+abort "The notify step must not read a secret or the job token anywhere but its env" if deep_string_values(notify_step.reject { |key, _| key == "env" }).any? { |value| value.match?(secret_pattern) }
+abort "The notify step must be continue-on-error so a notification problem never fails the deploy" unless notify_step["continue-on-error"] == true
 
 deploy_steps = deploy_production.fetch("steps")
 artifact_or_cache = /\A(?:actions\/(?:upload-artifact|download-artifact|cache(?:\/[a-z-]+)?)|[^@]*\/(?:upload-artifact|download-artifact))@/
@@ -524,10 +533,10 @@ abort "Preview build must keep its artifact upload" unless jobs.fetch("build-pre
 end
 abort "Preview deploy must keep its artifact download" unless jobs.fetch("deploy-preview").fetch("steps").any? { |step| step.fetch("uses", "").start_with?("actions/download-artifact@") }
 
-discord_deploy = jobs.fetch("discord-deploy")
-abort "Deploy notification must follow the single production job" unless Array(discord_deploy.fetch("needs")) == ["deploy-production"]
-abort "Deploy notification must report the production job result" unless discord_deploy.fetch("with").fetch("status") == "${{ needs.deploy-production.result }}"
-abort "Deploy notification must survive failure but not cancellation" unless discord_deploy.fetch("if").include?("!cancelled()") && !discord_deploy.fetch("if").include?("always()")
+# CEL-2795: the deploy notification is the last step of deploy-production, not a job that holds this workflow's concurrency group
+# (static-deploy-<slug>-<ref>) until it gets a runner. Its contract (when it posts, the script, the secret) is pinned in
+# deploy-static-discord-in-job.test.rb.
+abort "The deploy notification must be the last step of deploy-production, not a separate discord-deploy job" if jobs.key?("discord-deploy")
 
 {
   "deploy-production" => "Deploy to production",
