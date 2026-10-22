@@ -193,6 +193,7 @@ jobs:
           MANIFEST_VALIDATOR: ${{ runner.temp }}/cellarnode-preview-manifest-validator.rb
           LOCK_VALIDATOR: ${{ runner.temp }}/cellarnode-preview-lock-validator.rb
         run: &dependency-validation |
+          unset ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_ID_TOKEN_REQUEST_TOKEN
           cat > "$MANIFEST_VALIDATOR" <<'RUBY'
           require "find"
           require "json"
@@ -581,18 +582,20 @@ jobs:
       contents: read
       id-token: write
 
-    # Defence in depth, not a hard boundary: every step except Authenticate blanks the runner's OIDC token endpoint and request token, so
-    # build and dependency code cannot casually mint this job's token. A process the build leaves running could still read a later step's
-    # environment, which is why `dist` is re-checked right before the upload. Only the Authenticate step keeps both variables.
+    # Every `run:` script starts with `unset ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_ID_TOKEN_REQUEST_TOKEN`, so code those steps run cannot
+    # casually mint this job's OIDC token from its own environment. A step-level `env:` blank would NOT work: the runner sets both
+    # variables after it applies the step env (actions/runner ScriptHandler / NodeScriptActionHandler / ContainerActionHandler). `uses:`
+    # steps cannot be stripped this way; they are pinned actions. This is not a hard boundary: code could still read the values from its
+    # parent shell's /proc/<pid>/environ. The real boundary is build-before-auth ordering plus the minimal per-site identity, and `dist`
+    # is re-checked right before the upload.
     steps:
       - name: Validate deploy service account
         shell: bash
         env:
-          ACTIONS_ID_TOKEN_REQUEST_URL: ""
-          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ""
           DEPLOY_SERVICE_ACCOUNT: ${{ inputs.deploy_service_account }}
           WEBSITE: ${{ inputs.website }}
         run: |
+          unset ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_ID_TOKEN_REQUEST_TOKEN
           set -euo pipefail
           # Every production gcloud command is confined to gs://websites-deploy/<hostname>/, which is
           # also the only prefix the per-site account can touch, so the hostname must be a plain
@@ -618,42 +621,30 @@ jobs:
         with:
           version: ${{ inputs.pnpm_version }}
           run_install: false
-        env:
-          ACTIONS_ID_TOKEN_REQUEST_URL: ""
-          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ""
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: ${{ inputs.node_version }}
-        env:
-          ACTIONS_ID_TOKEN_REQUEST_URL: ""
-          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ""
 
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
-        env:
-          ACTIONS_ID_TOKEN_REQUEST_URL: ""
-          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ""
 
       - name: Validate production dependency inputs
         shell: bash
         env:
-          ACTIONS_ID_TOKEN_REQUEST_URL: ""
-          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ""
           MANIFEST_VALIDATOR: ${{ runner.temp }}/cellarnode-production-manifest-validator.rb
           LOCK_VALIDATOR: ${{ runner.temp }}/cellarnode-production-lock-validator.rb
         run: *dependency-validation
 
       - name: Install dependencies
         env:
-          ACTIONS_ID_TOKEN_REQUEST_URL: ""
-          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ""
           NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/cellarnode-production-npmrc
           MANIFEST_VALIDATOR: ${{ runner.temp }}/cellarnode-production-manifest-validator.rb
           LOCK_VALIDATOR: ${{ runner.temp }}/cellarnode-production-lock-validator.rb
         run: |
+          unset ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_ID_TOKEN_REQUEST_TOKEN
           rm -f -- .npmrc .pnpmfile.cjs "$NPM_CONFIG_USERCONFIG"
           trap 'rm -f "$NPM_CONFIG_USERCONFIG" "$MANIFEST_VALIDATOR" "$LOCK_VALIDATOR"' EXIT
           umask 077
@@ -665,11 +656,10 @@ jobs:
 
       - name: Verify credential isolation
         env:
-          ACTIONS_ID_TOKEN_REQUEST_URL: ""
-          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ""
           NPM_TOKEN: ""
           NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/cellarnode-production-npmrc
         run: |
+          unset ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_ID_TOKEN_REQUEST_TOKEN
           test -z "$NPM_TOKEN"
           test ! -e "$NPM_CONFIG_USERCONFIG"
           test ! -e .npmrc
@@ -683,27 +673,26 @@ jobs:
       - name: Type check
         if: inputs.typecheck
         env:
-          ACTIONS_ID_TOKEN_REQUEST_URL: ""
-          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ""
           NPM_TOKEN: ""
-        run: pnpm tsc --noEmit
+        run: |
+          unset ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_ID_TOKEN_REQUEST_TOKEN
+          pnpm tsc --noEmit
 
       - name: Lint
         if: inputs.lint
         env:
-          ACTIONS_ID_TOKEN_REQUEST_URL: ""
-          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ""
           NPM_TOKEN: ""
-        run: pnpm lint
+        run: |
+          unset ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_ID_TOKEN_REQUEST_TOKEN
+          pnpm lint
 
       - name: Build production
         shell: bash
         env:
-          ACTIONS_ID_TOKEN_REQUEST_URL: ""
-          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ""
           BUILD_ENV_VARS: ${{ inputs.build_env }}
           NPM_TOKEN: ""
         run: |
+          unset ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_ID_TOKEN_REQUEST_TOKEN
           if [ -n "$BUILD_ENV_VARS" ]; then
             while IFS= read -r line; do
               [ -n "$line" ] && export "${line?}"
@@ -714,14 +703,12 @@ jobs:
       - name: Reject non-regular build outputs
         shell: bash
         run: |
+          unset ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_ID_TOKEN_REQUEST_TOKEN
           test -d dist
           if find dist \( -type l -o -type b -o -type c -o -type p -o -type s \) -print -quit | grep -q .; then
             echo "Static artifact contains a non-regular entry" >&2
             exit 1
           fi
-        env:
-          ACTIONS_ID_TOKEN_REQUEST_URL: ""
-          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ""
 
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
@@ -733,19 +720,16 @@ jobs:
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f
         env:
-          ACTIONS_ID_TOKEN_REQUEST_URL: ""
-          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ""
           CLOUDSDK_CONFIG: ${{ runner.temp }}/gcloud
         with:
           skip_install: true
 
       - name: Warm gcloud credential cache
         env:
-          ACTIONS_ID_TOKEN_REQUEST_URL: ""
-          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ""
           CLOUDSDK_CONFIG: ${{ runner.temp }}/gcloud
           WEBSITE: ${{ inputs.website }}
         run: |
+          unset ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_ID_TOKEN_REQUEST_TOKEN
           # List only this site's prefix: the per-site account cannot list the bucket root. A first
           # deploy has no objects yet, and "matched no objects" still proves the credentials work.
           for i in 1 2 3 4 5; do
@@ -763,8 +747,6 @@ jobs:
 
       - name: Deploy to production
         env:
-          ACTIONS_ID_TOKEN_REQUEST_URL: ""
-          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ""
           CLOUDSDK_CONFIG: ${{ runner.temp }}/gcloud
           CLOUDSDK_STORAGE_PROCESS_COUNT: '1'
           CLOUDSDK_STORAGE_THREAD_COUNT: '1'
@@ -773,6 +755,7 @@ jobs:
           CLOUDSDK_STORAGE_PARALLEL_COMPOSITE_UPLOAD_ENABLED: 'False'
           WEBSITE: ${{ inputs.website }}
         run: |
+          unset ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_ID_TOKEN_REQUEST_TOKEN
           # Re-run the build-output check right before uploading: a process left running by the
           # build could have recreated a symlink or special file since the earlier check.
           test -d dist
@@ -787,16 +770,14 @@ jobs:
       # for one of the 2 pool runners after the deploy had finished, and this workflow's concurrency group (static-deploy-<slug>-<ref>) is
       # held until every job of the run ends, so the next push to main for the same site waited behind it. continue-on-error: a notification
       # problem must never fail the deploy. always(): a deploy that fails, times out or is cancelled while running must still say so; a
-      # superseded run never gets here (a pending run is cancelled before it starts). The webhook secret reaches only this step, and the
-      # OIDC variables are blanked here like in every step except Authenticate. The job token has no pull-requests scope (see the
+      # superseded run never gets here (a pending run is cancelled before it starts). The webhook secret reaches only this step. It is a
+      # `uses:` step, so it cannot unset the OIDC variables like the `run:` scripts do; it runs last, after the deploy. The job token has no pull-requests scope (see the
       # permissions above), so the merged-PR and thread lookup degrades to the commit message and a standalone deploy thread.
       - name: Discord deploy notification
         if: ${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
         continue-on-error: true
         uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         env:
-          ACTIONS_ID_TOKEN_REQUEST_URL: ""
-          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ""
           WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           EVENT: deploy
           STATUS: ${{ job.status }}

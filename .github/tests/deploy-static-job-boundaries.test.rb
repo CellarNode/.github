@@ -470,7 +470,8 @@ abort "Production rsync must not re-enable symlink following" if publish_run.inc
 publish_check_index = publish_run.index("find dist \\( -type l")
 publish_rsync_index = publish_run.index("gcloud storage rsync")
 abort "Production deploy step must repeat the non-regular output check before the rsync" unless publish_check_index && publish_check_index < publish_rsync_index
-abort "Production deploy step check must match the build-output check" unless publish_run.include?(deploy_steps.fetch(outputs_index).fetch("run").lines.map(&:strip).reject(&:empty?)[1..].first)
+build_output_check_line = deploy_steps.fetch(outputs_index).fetch("run").lines.map(&:strip).find { |line| line.start_with?("if find dist") }
+abort "Production deploy step check must match the build-output check" unless build_output_check_line && publish_run.include?(build_output_check_line)
 
 # Execute the warm-up and deploy steps against a recording gcloud to prove the real targets.
 Dir.mktmpdir do |directory|

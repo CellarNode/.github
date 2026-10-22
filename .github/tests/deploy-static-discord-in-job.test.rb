@@ -66,7 +66,9 @@ def workflow_failures(wf)
   out << "deploy-production: DEPLOY_MODE must be deployed" unless env["DEPLOY_MODE"] == "deployed"
   out << "deploy-production: the notify step must pass the Discord tags" unless env["TAGS"] == "${{ inputs.discord_tags }}"
   out << "deploy-production: the webhook must come from the DISCORD_WEBHOOK_URL secret" unless env["WEBHOOK_URL"] == "${{ secrets.DISCORD_WEBHOOK_URL }}"
-  OIDC_VARS.each { |name| out << "deploy-production: the notify step must blank #{name}" unless env[name] == "" }
+  # A `uses:` step cannot unset the OIDC variables like the `run:` scripts do, and an env blank would be INERT (the runner sets both variables
+  # after applying the step env), so the step must not pretend: no env blank, and it stays the last step, after the deploy.
+  OIDC_VARS.each { |name| out << "deploy-production: the notify step must not set #{name} in env (the runner overwrites it: the blank is inert)" if env.key?(name) }
 
   # The webhook secret reaches ONLY the notify step: nothing at workflow or job level, no other step of any job.
   out << "the webhook secret must not be set at workflow level" if wf.fetch("env", {}).to_s.include?("DISCORD_WEBHOOK_URL")
@@ -121,7 +123,7 @@ workflow_mutations = {
   "the notify step is no longer last" => ->(wf) { wf["jobs"]["deploy-production"]["steps"].push({ "name" => "Later step", "run" => "true" }) },
   "status is hard-coded" => ->(wf) { last_step(wf)["env"]["STATUS"] = "success" },
   "unpinned github-script" => ->(wf) { last_step(wf)["uses"] = "actions/github-script@v7" },
-  "the notify step keeps the OIDC token variable" => ->(wf) { last_step(wf)["env"].delete("ACTIONS_ID_TOKEN_REQUEST_TOKEN") },
+  "the notify step gets an inert env blank" => ->(wf) { last_step(wf)["env"]["ACTIONS_ID_TOKEN_REQUEST_TOKEN"] = "" },
   "the webhook secret moves to the job env" => ->(wf) { wf["jobs"]["deploy-production"]["env"] = { "DISCORD_WEBHOOK_URL" => "${{ secrets.DISCORD_WEBHOOK_URL }}" } },
   "the webhook secret leaks into the build step" => ->(wf) { wf["jobs"]["deploy-production"]["steps"].find { |s| s["name"] == "Build production" }["env"]["DISCORD_WEBHOOK_URL"] = "${{ secrets.DISCORD_WEBHOOK_URL }}" },
   "the webhook secret leaks into a preview step" => ->(wf) { wf["jobs"]["deploy-preview"]["steps"].first["env"] = { "DISCORD_WEBHOOK_URL" => "${{ secrets.DISCORD_WEBHOOK_URL }}" } },
