@@ -393,7 +393,8 @@ jobs:
     # With argocd_deploy=false the `deploy` job is skipped by design, so report the BUILD result (the image is pushed and
     # the cluster pulls it) instead of a misleading "skipped" warning.
     needs: [build, deploy]
-    if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # CEL-2795: !cancelled(), not always(): a cancelled (superseded) run must not wait for a runner just to post a notification; it would keep holding the caller's concurrency group. Failures still notify.
+    if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     uses: ./.github/workflows/discord-notify.yaml
     secrets:
       DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
