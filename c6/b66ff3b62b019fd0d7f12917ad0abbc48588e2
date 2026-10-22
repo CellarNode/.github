@@ -1,0 +1,24 @@
+.github/tests/i18n-pipeline-git-workspace.test.rb
+  s_fdb4362530f7d8::t_1bd6fdb2c53b44 1-137
+.github/workflows/validate-i18n-pipeline.yaml
+  s_fdb4362530f7d8::t_bdb564f881b35c 41-43
+.github/workflows/i18n-pipeline.yaml
+  s_fdb4362530f7d8::t_a38549cec27b2c 129-164
+  s_fdb4362530f7d8::t_ea246751a11a49 312-325
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "c6b66ff3b62b019fd0d7f12917ad0abbc48588e2",
+  "prompts": {},
+  "sessions": {
+    "s_fdb4362530f7d8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3c8495cf-aea4-4f75-8d45-2959feba3cd5",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "mjnong <marcusnagy@icloud.com>"
+    }
+  }
+}

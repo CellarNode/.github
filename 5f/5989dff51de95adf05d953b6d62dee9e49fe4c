@@ -1,0 +1,19 @@
+.github/workflows/deploy-backend.yaml
+  s_0090a602467faa::t_6fb6075b4475a3 38-42,268,270,390-392,399
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "5f5989dff51de95adf05d953b6d62dee9e49fe4c",
+  "prompts": {},
+  "sessions": {
+    "s_0090a602467faa": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ca61e19f-7cf8-4e7c-b822-321f4f51f119",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "mjnong <marcusnagy@icloud.com>"
+    }
+  }
+}

@@ -1,0 +1,30 @@
+.github/workflows/deploy-static-website.yaml
+  s_652e5c6339758a::t_ad6b9cc5f9c48b 49-52,597,972,983
+  s_652e5c6339758a::t_a82d3b0f0e4c0d 559-567,578,581-584,586-587,595-596,598-606,698
+  s_652e5c6339758a::t_e1961a8f760731 585,588-594,710,712-713,715-721
+.github/tests/deploy-static-lock-validator.test.rb
+  s_652e5c6339758a::t_7ddae87cd93031 348
+.github/tests/deploy-static-job-boundaries.test.rb
+  s_652e5c6339758a::t_7ddae87cd93031 38-41,220,223-227,239,310-314,317-321,324-357,359-387,389,474-488
+  s_652e5c6339758a::t_0c95799946c724 421
+  s_652e5c6339758a::t_3973b831f8307f 422-424,453
+  s_652e5c6339758a::t_4be2b0ef184def 12-14,358
+  s_652e5c6339758a::t_108f6c919924b1 402-404
+  s_652e5c6339758a::t_fc3aa7025829cb 388,390-401,405-420,425-452,454-473
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "6e7fa1009e028ce44e7a05da41e329505c5384d1",
+  "prompts": {},
+  "sessions": {
+    "s_652e5c6339758a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "637f318b-1b48-4817-9705-81b0cdb10d03",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "mjnong <marcusnagy@icloud.com>"
+    }
+  }
+}

@@ -1,0 +1,22 @@
+.github/tests/deploy-static-job-boundaries.test.rb
+  s_652e5c6339758a::t_54dfaf7031be0d 515
+  s_652e5c6339758a::t_05d916ffa6e67a 433,441
+.github/workflows/deploy-static-website.yaml
+  s_652e5c6339758a::t_05d916ffa6e67a 749
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "20bc984e4e4ae4979595af2419429a4a06a57331",
+  "prompts": {},
+  "sessions": {
+    "s_652e5c6339758a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "637f318b-1b48-4817-9705-81b0cdb10d03",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "mjnong <marcusnagy@icloud.com>"
+    }
+  }
+}

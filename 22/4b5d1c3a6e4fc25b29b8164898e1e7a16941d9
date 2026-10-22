@@ -1,0 +1,19 @@
+.github/tests/deploy-backend-loop.test.rb
+  s_39469d274205d3::t_8f0dcc48f2b65a 9-10,88-93
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "224b5d1c3a6e4fc25b29b8164898e1e7a16941d9",
+  "prompts": {},
+  "sessions": {
+    "s_39469d274205d3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cf762304-2536-4c57-8ba0-7d77c28a9372",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "mjnong <marcusnagy@icloud.com>"
+    }
+  }
+}
