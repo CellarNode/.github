@@ -6,7 +6,8 @@
 #   * order: non-worker flavors first (input order), then worker-* flavors,
 #   * the first failed flavor stops the loop with a non-zero exit and nothing after it is upserted,
 #   * a flavor that fails once then succeeds is retried and the run still succeeds,
-#   * a flavor that fails every attempt is retried 3 times and then fails the run.
+#   * a flavor that fails every attempt is retried 3 times and then fails the run,
+#   * a non-argocd error (malformed docker_targets) fails the run before any upsert.
 #
 # Run: ruby .github/tests/deploy-backend-loop.test.rb      (exit 0 = every contract holds)
 
@@ -84,11 +85,12 @@ fail!("a flavor failing once must be retried and the run succeed, got #{status.e
 fail!("a flaky flavor must be retried exactly once, got #{calls.inspect}") unless calls == ["cellarnode-admin", "cellarnode-public", "cellarnode-public"] + ORDER[2..]
 fail!("a retry must be logged with ::warning::") unless out.include?("::warning")
 
-# Why `shell: bash` matters: under dash the same script dies on `set -o pipefail`. Only asserted when dash exists.
-if system("command -v dash >/dev/null 2>&1")
-  status, calls, = run_script(script, interpreter: %w[dash -e])
-  fail!("expected the script to FAIL under dash -e (it needs bash); the shell: bash declaration would be unnecessary") if status.success? && calls == ORDER
-end
+# An error OUTSIDE argocd (here: the jq image mapping on malformed docker_targets) must fail the run, not be swallowed.
+# This guards the per-flavor `set -eo pipefail` subshell.
+status, calls, out = run_script(script, env: { "DOCKER_TARGETS" => "not-json" })
+fail!("a non-argocd error in the deploy function must fail the run, got exit #{status.exitstatus}") if status.success?
+fail!("argocd must not be called for a flavor whose image mapping failed, got #{calls.inspect}") unless calls.empty?
+fail!("the failure must name the first flavor (loop stops there): #{out}") unless out.include?("cellarnode-admin failed") && !out.include?("cellarnode-public")
 
 if FAILURES.empty?
   puts "deploy backend loop: OK (shell: bash, order, stop at first failure, retry)"
