@@ -264,6 +264,7 @@ jobs:
     container:
       image: europe-north1-docker.pkg.dev/festive-terrain-478011-h0/beveriq/ci-runner@sha256:b8ae250c5d7fae79dbbea1f62ca7613ecabd6f3efbd13b533cbdecb293cdf814
     needs: build
+    timeout-minutes: 15
     # CEL-2322: PRODUCTION deploys only from main. A workflow_dispatch on another branch still builds and pushes its
     # `branch-<slug>-<sha7>` image (see the tag step), so that image stays available for a future preview/staging
     # environment, but it never reaches production: see `deploy-skipped-notice`.
@@ -276,12 +277,18 @@ jobs:
     # main deploys (cancel-in-progress), and with 6 matrix legs queueing on a 2-runner pool a cancel could leave some flavors
     # on the new tag and others on the old one (skew that persists if the superseding run then fails). Migrations run as
     # ArgoCD PreSync hooks only on the non-worker flavors (admin, public, elabel), so workers must never get ahead of the
-    # schema: non-worker flavors are upserted FIRST, in input order, then the `<worker_image_prefix>-*` flavors. A cancel
-    # between flavors can still stop the loop part-way, but it is seconds wide instead of runner-queue wide, and the
-    # superseding run re-upserts every flavor. One job also saves 5 runner pod starts on the 2-runner pool.
+    # schema: non-worker flavors are upserted FIRST, in input order, then the `<worker_image_prefix>-*` flavors. Note
+    # `argocd app create --upsert` returns once the app spec is updated; auto-sync (including the admin/public PreSync
+    # migration Job) runs asynchronously. So the ordering guarantees the migrating flavors are UPSERTED first (a cancel or
+    # failure can never leave workers on a new tag whose migration was never triggered). It does NOT guarantee the migration
+    # has finished before workers roll out; that short window existed before too. A cancel between flavors can still stop
+    # the loop part-way, but it is seconds wide instead of runner-queue wide, and the superseding run re-upserts every
+    # flavor. One job also saves 5 runner pod starts on the 2-runner pool.
     # Failure semantics match the old matrix (fail-fast defaulted to true): stop at the first failed flavor.
     steps:
       - name: Deploy flavors to ArgoCD (migrating flavors first)
+        # ARC k8s-mode runs `run:` steps with plain `sh -e` (dash) unless a shell is set; the script needs bash (pipefail).
+        shell: bash
         env:
           ARGOCD_AUTH_TOKEN: ${{ secrets.ARGO_API_KEY }}
           ARGOCD_URL: argo.anli.es
@@ -323,18 +330,31 @@ jobs:
               esac
             fi
 
-            argocd app create --upsert ${APP}-${FLAVOR} --server $ARGOCD_URL \
-              --project ${ARGOCD_PROJECT} \
-              --repo git@github.com:CellarNode/crossplane-gcloud.git \
-              --path ${DEPLOY_PATH}/${APP}-${FLAVOR}/ \
-              --dest-server https://kubernetes.default.svc \
-              --dest-namespace ${APP}-${FLAVOR} \
-              --kustomize-image "app-image=${REGISTRY}/${IMAGE_NAME}:${TAG}" \
-              --kustomize-common-label app.kubernetes.io/name=${APP}-${FLAVOR} \
-              --nameprefix=${FLAVOR}- \
-              --sync-policy auto \
-              --sync-option CreateNamespace=true \
-              --sync-option PruneLast=true
+            # The upsert is idempotent, so retry transient ArgoCD/API errors (backoff 5s, then 15s); the last failure is returned.
+            ATTEMPT=1
+            while true; do
+              if argocd app create --upsert ${APP}-${FLAVOR} --server $ARGOCD_URL \
+                --project ${ARGOCD_PROJECT} \
+                --repo git@github.com:CellarNode/crossplane-gcloud.git \
+                --path ${DEPLOY_PATH}/${APP}-${FLAVOR}/ \
+                --dest-server https://kubernetes.default.svc \
+                --dest-namespace ${APP}-${FLAVOR} \
+                --kustomize-image "app-image=${REGISTRY}/${IMAGE_NAME}:${TAG}" \
+                --kustomize-common-label app.kubernetes.io/name=${APP}-${FLAVOR} \
+                --nameprefix=${FLAVOR}- \
+                --sync-policy auto \
+                --sync-option CreateNamespace=true \
+                --sync-option PruneLast=true; then
+                return 0
+              fi
+              if [ "$ATTEMPT" -ge 3 ]; then
+                return 1
+              fi
+              DELAY=$(( ATTEMPT == 1 ? ${RETRY_DELAY_1:-5} : ${RETRY_DELAY_2:-15} ))
+              echo "::warning title=ArgoCD upsert retry::${APP}-${FLAVOR} attempt ${ATTEMPT} failed; retrying in ${DELAY}s"
+              sleep "$DELAY"
+              ATTEMPT=$(( ATTEMPT + 1 ))
+            done
           }
 
           # Non-worker flavors first (input order), then `${WORKER_PREFIX}-*` flavors (input order).
