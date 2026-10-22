@@ -770,9 +770,16 @@ jobs:
       # for one of the 2 pool runners after the deploy had finished, and this workflow's concurrency group (static-deploy-<slug>-<ref>) is
       # held until every job of the run ends, so the next push to main for the same site waited behind it. continue-on-error: a notification
       # problem must never fail the deploy. always(): a deploy that fails, times out or is cancelled while running must still say so; a
-      # superseded run never gets here (a pending run is cancelled before it starts). The webhook secret reaches only this step. It is a
-      # `uses:` step, so it cannot unset the OIDC variables like the `run:` scripts do; it runs last, after the deploy. The job token has no pull-requests scope (see the
-      # permissions above), so the merged-PR and thread lookup degrades to the commit message and a standalone deploy thread.
+      # superseded run never gets here (a pending run is cancelled before it starts).
+      #
+      # SECRET EXPOSURE: DISCORD_WEBHOOK_URL is scoped to this step's env only, but this step now runs in the SAME job and container as the
+      # dependency and build code (the old `discord-deploy` was a separate job and pod). A process the build left running could read this
+      # step's process environment (/proc/<pid>/environ) and get the webhook, the same caveat as the OIDC variables. The webhook only lets
+      # someone post to the Discord channel; it carries no cloud access.
+      #
+      # It is a `uses:` step, so it cannot unset the OIDC variables like the `run:` scripts do; it runs last, after the deploy. The job token
+      # has no pull-requests scope (see the permissions above), so the merged-PR and thread lookup degrades to the commit message and a
+      # standalone deploy thread.
       - name: Discord deploy notification
         if: ${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
         continue-on-error: true
