@@ -566,8 +566,8 @@ jobs:
   # crossplane-gcloud#160: the account can write only its own site prefix, and nothing that can
   # produce this job's token may impersonate pipelines. Neither is enforced in this file. Not
   # covered here: job pods on the pool carry the shared buildkitd client certificate, so build code
-  # in this job can reach that daemon. That exposure predates this change and is tracked in a
-  # separate CEL ticket.
+  # in this job can reach that daemon. That exposure predates this change and is tracked in
+  # CEL-2798.
   deploy-production:
     needs: preview-policy
     if: >-
