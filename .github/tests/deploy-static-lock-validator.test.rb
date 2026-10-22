@@ -345,7 +345,7 @@ fixtures.each do |name, (lock, expected)|
 end
 
 parsed_workflow = YAML.safe_load(workflow, aliases: true)
-dependency_scripts = %w[build-preview build-production].to_h do |job_name|
+dependency_scripts = %w[build-preview deploy-production].to_h do |job_name|
   steps = parsed_workflow.fetch("jobs").fetch(job_name).fetch("steps")
   validation_index = steps.index do |step|
     env = step.fetch("env", {})

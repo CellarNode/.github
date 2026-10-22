@@ -46,6 +46,10 @@ on:
         required: false
         type: string
         default: ""
+      deploy_service_account:
+        description: "Per-site production deploy service account (<name>@festive-terrain-478011-h0.iam.gserviceaccount.com); never the shared pipelines account"
+        required: true
+        type: string
     secrets:
       DISCORD_WEBHOOK_URL:
         description: "Discord webhook credential"
@@ -552,7 +556,19 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  build-production:
+  # CEL-2768: build and deploy happen in ONE job so no artifact (or cache) hand-off is needed.
+  # Artifact storage is exhausted, and a cache hand-off lets a compromised build overwrite action
+  # code in a credentialed job (actions/cache restore extracts with tar -P; CellarNode/.github#42).
+  # Nothing mints a Google token until the build and the output checks have finished, but that
+  # ordering is defence in depth, not a boundary: code that runs during the build can also request
+  # an OIDC token while id-token: write is granted. The boundary is the per-site deploy service
+  # account (caller input deploy_service_account) together with the pipelines exclusion in
+  # crossplane-gcloud#160: the account can write only its own site prefix, and nothing that can
+  # produce this job's token may impersonate pipelines. Neither is enforced in this file. Not
+  # covered here: job pods on the pool carry the shared buildkitd client certificate, so build code
+  # in this job can reach that daemon. That exposure predates this change and is tracked in
+  # CEL-2798.
+  deploy-production:
     needs: preview-policy
     if: >-
       github.event_name == 'push' &&
@@ -563,8 +579,35 @@ jobs:
       image: europe-north1-docker.pkg.dev/festive-terrain-478011-h0/beveriq/ci-runner@sha256:b8ae250c5d7fae79dbbea1f62ca7613ecabd6f3efbd13b533cbdecb293cdf814
     permissions:
       contents: read
+      id-token: write
 
     steps:
+      - name: Validate deploy service account
+        shell: bash
+        env:
+          DEPLOY_SERVICE_ACCOUNT: ${{ inputs.deploy_service_account }}
+          WEBSITE: ${{ inputs.website }}
+        run: |
+          set -euo pipefail
+          # Every production gcloud command is confined to gs://websites-deploy/<hostname>/, which is
+          # also the only prefix the per-site account can touch, so the hostname must be a plain
+          # DNS name: no empty value, slash, dot-segment or glob that could widen the target.
+          if [[ ! "$WEBSITE" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?([.][a-z0-9]([a-z0-9-]*[a-z0-9])?)+$ ]]; then
+            echo "website must be a lowercase DNS hostname, got: ${WEBSITE}" >&2
+            exit 1
+          fi
+          # Fail closed before any source is fetched: the account must be a per-site identity in
+          # this project, and production must never fall back to the shared pipelines identity.
+          pattern='^[a-z][a-z0-9-]{4,28}[a-z0-9]@'"${PROJECT_ID}"'[.]iam[.]gserviceaccount[.]com$'
+          if [[ ! "$DEPLOY_SERVICE_ACCOUNT" =~ $pattern ]]; then
+            echo "deploy_service_account must be a <name>@${PROJECT_ID}.iam.gserviceaccount.com service account" >&2
+            exit 1
+          fi
+          if [ "${DEPLOY_SERVICE_ACCOUNT%%@*}" = "pipelines" ]; then
+            echo "deploy_service_account must be a per-site identity, never the shared pipelines account" >&2
+            exit 1
+          fi
+
       - name: Set up pnpm
         uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa
         with:
@@ -651,46 +694,12 @@ jobs:
             exit 1
           fi
 
-      - name: Upload static site artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: static-site-${{ inputs.website_slug }}
-          path: dist
-          if-no-files-found: error
-          retention-days: 1
-
-  deploy-production:
-    needs: build-production
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: self-hosted-k8s
-    container:
-      image: europe-north1-docker.pkg.dev/festive-terrain-478011-h0/beveriq/ci-runner:latest-deploy-static-website@sha256:2f9a48587bfe0ba5db2fb4391ff40067633084e5885b07d84818c4342875154f
-    permissions:
-      contents: read
-      id-token: write
-
-    steps:
-      - name: Download static site artifact
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          name: static-site-${{ inputs.website_slug }}
-          path: dist
-
-      - name: Reject non-regular artifact entries
-        shell: bash
-        run: |
-          test -d dist
-          if find dist \( -type l -o -type b -o -type c -o -type p -o -type s \) -print -quit | grep -q .; then
-            echo "Static artifact contains a non-regular entry" >&2
-            exit 1
-          fi
-
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
         with:
           project_id: ${{ env.PROJECT_ID }}
           workload_identity_provider: 'projects/1040576468442/locations/global/workloadIdentityPools/iamwipp-pipelines/providers/iamwipp-github-pipelines-beveriq'
-          service_account: 'pipelines@${{ env.PROJECT_ID }}.iam.gserviceaccount.com'
+          service_account: ${{ inputs.deploy_service_account }}
 
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f
@@ -702,10 +711,18 @@ jobs:
       - name: Warm gcloud credential cache
         env:
           CLOUDSDK_CONFIG: ${{ runner.temp }}/gcloud
+          WEBSITE: ${{ inputs.website }}
         run: |
+          # List only this site's prefix: the per-site account cannot list the bucket root. A first
+          # deploy has no objects yet, and "matched no objects" still proves the credentials work.
           for i in 1 2 3 4 5; do
-            gcloud storage ls "gs://${GCS_BUCKET}" > /dev/null && exit 0
-            echo "gcloud warm-up attempt ${i}/5 failed; retrying in $((i * 10))s"
+            if out="$(gcloud storage ls "gs://${GCS_BUCKET}/${WEBSITE}/" 2>&1 > /dev/null)"; then
+              exit 0
+            fi
+            case "$out" in
+              *"matched no objects"*) exit 0 ;;
+            esac
+            echo "gcloud warm-up attempt ${i}/5 failed: ${out}; retrying in $((i * 10))s"
             sleep $((i * 10))
           done
           echo "gcloud warm-up failed after 5 attempts" >&2
@@ -716,10 +733,20 @@ jobs:
           CLOUDSDK_CONFIG: ${{ runner.temp }}/gcloud
           CLOUDSDK_STORAGE_PROCESS_COUNT: '1'
           CLOUDSDK_STORAGE_THREAD_COUNT: '1'
+          # Composite uploads (default for files of 150 MiB or more) stage temporary component objects
+          # outside the site prefix and need storage.buckets.get, neither of which the per-site account has.
+          CLOUDSDK_STORAGE_PARALLEL_COMPOSITE_UPLOAD_ENABLED: 'False'
           WEBSITE: ${{ inputs.website }}
         run: |
-          gcloud storage rsync --recursive --checksums-only --delete-unmatched-destination-objects \
-            ./dist "gs://${GCS_BUCKET}/${WEBSITE}"
+          # Re-run the build-output check right before uploading: a process left running by the
+          # build could have recreated a symlink or special file since the earlier check.
+          test -d dist
+          if find dist \( -type l -o -type b -o -type c -o -type p -o -type s \) -print -quit | grep -q .; then
+            echo "Static artifact contains a non-regular entry" >&2
+            exit 1
+          fi
+          gcloud storage rsync --recursive --ignore-symlinks --checksums-only --delete-unmatched-destination-objects \
+            ./dist "gs://${GCS_BUCKET}/${WEBSITE}/"
 
   deploy-preview:
     needs: [preview-policy, build-preview]
@@ -956,7 +983,7 @@ jobs:
       status: ${{ github.event.pull_request.merged && 'merged' || 'closed' }}
 
   discord-deploy:
-    needs: [build-production, deploy-production]
+    needs: deploy-production
     # CEL-2795: !cancelled(), not always(): a cancelled run must not wait for a runner just to post a notification (it would keep the run, and any concurrency group it is in, alive). Failures still notify.
     if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     permissions:
@@ -967,5 +994,5 @@ jobs:
       DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
     with:
       event: deploy
-      status: ${{ needs.build-production.result == 'success' && needs.deploy-production.result || needs.build-production.result }}
+      status: ${{ needs.deploy-production.result }}
       tags: ${{ inputs.discord_tags }}

@@ -9,7 +9,9 @@ jobs = workflow.fetch("jobs")
 
 # CEL-1980: every @cellarnode/* package is public on npm and the org
 # NPM_TOKEN secret has been retired. Guard against silent re-introduction.
-workflow_call_secrets = workflow.dig("on", "workflow_call", "secrets") || {}
+# YAML 1.1 (Psych) parses the bare `on:` key as boolean true, so look it up by either key.
+workflow_triggers = workflow["on"] || workflow[true] || abort("deploy-static-website.yaml has no on: block")
+workflow_call_secrets = workflow_triggers.dig("workflow_call", "secrets") || {}
 abort "deploy-static-website.yaml must not declare NPM_TOKEN as a secret input (CEL-1980)" if workflow_call_secrets.key?("NPM_TOKEN")
 
 def deep_string_values(node)
@@ -33,9 +35,10 @@ abort "Production deploys must never be cancelled in progress" unless cancel_in_
 
 abort "Preview dependencies must not cross jobs through a package-store artifact" if jobs.key?("preview-dependencies")
 
-# CEL-2768: the GitHub-hosted Actions budget is exhausted, so the policy and production build jobs
-# run on the existing self-hosted-k8s ARC pool inside the digest-pinned ci-runner image. That image
-# carries Node 22, corepack pnpm and ruby (the deploy-production image does not carry ruby).
+# CEL-2768: the GitHub-hosted Actions budget is exhausted, so the policy job and the single
+# production build-and-deploy job run on the existing self-hosted-k8s ARC pool inside the
+# digest-pinned ci-runner image. That image carries Node 22, corepack pnpm, ruby and gcloud, so
+# one job can validate, build, authenticate and deploy without an artifact or cache hand-off.
 # Preview builds deliberately stay GitHub-hosted: they run unmerged pull-request lifecycle scripts
 # and every pool pod carries the buildkitd client certificate.
 CI_RUNNER_IMAGE = "europe-north1-docker.pkg.dev/festive-terrain-478011-h0/beveriq/ci-runner@sha256:b8ae250c5d7fae79dbbea1f62ca7613ecabd6f3efbd13b533cbdecb293cdf814".freeze
@@ -214,11 +217,14 @@ abort "Preview authorization recheck must not receive NPM_TOKEN" if preview_auth
 abort "Preview authorization recheck must use pinned GitHub Script" unless preview_authorization.fetch("uses", "").match?(/\Aactions\/github-script@[0-9a-f]{40}\z/)
 abort "Preview authorization recheck must use the job token" unless preview_authorization.fetch("with", {}).fetch("github-token", nil) == "${{ github.token }}"
 
-%w[build-preview build-production].each do |job_name|
+%w[build-preview deploy-production].each do |job_name|
   steps = jobs.fetch(job_name).fetch("steps")
   validation_index = steps.index { |step| step.fetch("name", "") == "Reject non-regular build outputs" }
-  upload_index = steps.index { |step| step.fetch("name", "") == "Upload static site artifact" }
-  abort "#{job_name} must validate build outputs before upload" unless validation_index && upload_index && validation_index < upload_index
+  abort "#{job_name} must validate build outputs" unless validation_index
+  if job_name == "build-preview"
+    upload_index = steps.index { |step| step.fetch("name", "") == "Upload static site artifact" }
+    abort "#{job_name} must validate build outputs before upload" unless upload_index && validation_index < upload_index
+  end
 
   validation = steps.fetch(validation_index).fetch("run")
   Dir.mktmpdir do |directory|
@@ -230,7 +236,7 @@ abort "Preview authorization recheck must use the job token" unless preview_auth
 
     File.symlink("/proc/self/environ", File.join(dist, "environment.txt"))
     _stdout, _stderr, status = Open3.capture3("bash", "-euo", "pipefail", "-c", validation, chdir: directory)
-    abort "#{job_name} must reject symlinks before upload" if status.success?
+    abort "#{job_name} must reject symlinks before upload or deploy" if status.success?
   end
 end
 
@@ -301,19 +307,227 @@ authorization_script = preview_authorization.fetch("with").fetch("script")
 abort "Preview lifecycle must not bind an unavailable sender field" if File.read(workflow_path).include?("github.event.sender.login")
 abort "Preview lifecycle must not trust stale author association" if File.read(workflow_path).include?("author_association")
 
-build_production = jobs.fetch("build-production")
-abort "Production build must use the self-hosted runner" unless build_production.fetch("runs-on") == "self-hosted-k8s"
-abort "Production build must use the pinned ci-runner image" unless build_production.dig("container", "image") == CI_RUNNER_IMAGE
-abort "Production build must not receive workload identity" if build_production.fetch("permissions", {}).key?("id-token")
-abort "Production build must only run for pushes to main" unless build_production.fetch("if").include?("github.event_name == 'push'") && build_production.fetch("if").include?("github.ref == 'refs/heads/main'")
-abort "Production build must depend on toolchain policy" unless Array(build_production.fetch("needs")).include?("preview-policy")
-abort "Production build must require approved toolchain" unless build_production.fetch("if").include?("needs.preview-policy.outputs.toolchain_allowed == 'true'")
-
+# CEL-2768: production is ONE job. A separate build job would need an artifact (storage quota is
+# exhausted) or a cache (actions/cache restore extracts with tar -P before any of our checks, so a
+# compromised build could overwrite the action code of a credentialed job). See
+# CellarNode/.github#42 for the cache analysis.
+abort "Production must not keep a separate build-production job (CEL-2768)" if jobs.key?("build-production")
 deploy_production = jobs.fetch("deploy-production")
 abort "Production deploy must use the self-hosted runner" unless deploy_production.fetch("runs-on") == "self-hosted-k8s"
+abort "Production deploy must use the pinned ci-runner image" unless deploy_production.dig("container", "image") == CI_RUNNER_IMAGE
+abort "Production deploy must only run for pushes to main" unless deploy_production.fetch("if").include?("github.event_name == 'push'") && deploy_production.fetch("if").include?("github.ref == 'refs/heads/main'")
+abort "Production deploy must depend only on the toolchain policy" unless Array(deploy_production.fetch("needs")) == ["preview-policy"]
+abort "Production deploy must require approved toolchain" unless deploy_production.fetch("if").include?("needs.preview-policy.outputs.toolchain_allowed == 'true'")
+abort "Production deploy permissions must be exactly contents: read and id-token: write" unless deploy_production["permissions"] == { "contents" => "read", "id-token" => "write" }
+# Build code runs in this job, so it must not be able to start another run (workflow_dispatch needs
+# actions: write; repository_dispatch or a workflow-triggering push needs contents: write) and so
+# escape the per-site identity. The job block replaces, not extends, any workflow-level permissions.
+forbidden_scopes = %w[actions checks deployments discussions issues packages pages pull-requests repository-projects security-events statuses attestations models]
+production_permissions = deploy_production["permissions"]
+abort "Production job permissions must be an explicit mapping, not a shorthand" unless production_permissions.is_a?(Hash)
+abort "Production job must hold only contents: read and id-token: write, got #{production_permissions.inspect}" unless production_permissions.keys.sort == %w[contents id-token] && production_permissions.fetch("contents") == "read" && production_permissions.fetch("id-token") == "write"
+abort "Production job must not grant #{forbidden_scopes & production_permissions.keys}" unless (forbidden_scopes & production_permissions.keys).empty?
+workflow_permissions = workflow["permissions"]
+abort "Workflow-level permissions must not grant write access (got #{workflow_permissions.inspect})" if workflow_permissions.is_a?(String) ? workflow_permissions.match?(/write/) : Array(workflow_permissions&.values).any? { |level| level == "write" }
+abort "Production job must not read a repository secret or the job token itself" if deep_string_values(deploy_production).any? { |value| value.match?(/secrets\.|github\.token|GITHUB_TOKEN/) }
 
 deploy_steps = deploy_production.fetch("steps")
-abort "Production deploy must not check out source" if deploy_steps.any? { |step| step.fetch("uses", "").start_with?("actions/checkout@") }
+artifact_or_cache = /\A(?:actions\/(?:upload-artifact|download-artifact|cache(?:\/[a-z-]+)?)|[^@]*\/(?:upload-artifact|download-artifact))@/
+abort "Production path must not use artifact or cache actions (CEL-2768)" if deploy_steps.any? { |step| step.fetch("uses", "").match?(artifact_or_cache) }
+abort "Production path must not reference artifacts or caches anywhere in the job" if deep_string_values(deploy_production).any? { |value| value.match?(/upload-artifact|download-artifact|actions\/cache|static-site-/) }
+abort "Production job must check out source in the same job" unless deploy_steps.any? { |step| step.fetch("uses", "").start_with?("actions/checkout@") }
+production_checkout = deploy_steps.find { |step| step.fetch("uses", "").start_with?("actions/checkout@") }
+abort "Production checkout must disable persisted credentials" unless production_checkout.fetch("with", {}).fetch("persist-credentials", nil) == false
+
+step_index = lambda do |name|
+  deploy_steps.index { |step| step.fetch("name", "") == name } || abort("Production job is missing step: #{name}")
+end
+checkout_index = deploy_steps.index { |step| step.fetch("uses", "").start_with?("actions/checkout@") }
+account_index = step_index.call("Validate deploy service account")
+dependency_index = step_index.call("Validate production dependency inputs")
+install_index = step_index.call("Install dependencies")
+rebuild_index = step_index.call("Rebuild dependencies")
+build_index = step_index.call("Build production")
+outputs_index = step_index.call("Reject non-regular build outputs")
+auth_index = step_index.call("Authenticate to Google Cloud")
+sdk_index = step_index.call("Set up Cloud SDK")
+warm_index = step_index.call("Warm gcloud credential cache")
+publish_index = step_index.call("Deploy to production")
+abort "Deploy service account must be validated before source is fetched" unless account_index < checkout_index
+abort "Production steps are out of order" unless checkout_index < dependency_index && dependency_index < install_index && install_index < rebuild_index && rebuild_index < build_index && build_index < outputs_index
+abort "Google Cloud authentication must come after build and output validation" unless outputs_index < auth_index && auth_index < sdk_index && sdk_index < warm_index && warm_index < publish_index
+google_steps = deploy_steps.each_index.select { |index| deploy_steps.fetch(index).fetch("uses", "").start_with?("google-github-actions/") }
+abort "No Google action may run before output validation has finished" unless google_steps.all? { |index| index > outputs_index }
+abort "Production must authenticate exactly once" unless deploy_steps.count { |step| step.fetch("uses", "").start_with?("google-github-actions/auth@") } == 1
+
+production_auth = deploy_steps.fetch(auth_index)
+abort "Production auth must use the pinned auth action" unless production_auth.fetch("uses") == "google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093"
+abort "Production auth must impersonate the caller's deploy_service_account" unless production_auth.fetch("with").fetch("service_account") == "${{ inputs.deploy_service_account }}"
+abort "Production path must never reference the shared pipelines service account" if deep_string_values(deploy_production).any? { |value| value.include?("pipelines@") }
+
+# The deploy_service_account input is required and is validated by regex before anything uses it.
+account_input = workflow_triggers.dig("workflow_call", "inputs", "deploy_service_account") || {}
+abort "deploy_service_account must be a required string input" unless account_input["required"] == true && account_input["type"] == "string"
+abort "deploy_service_account must not default to any account" if account_input.key?("default")
+account_step = deploy_steps.fetch(account_index)
+abort "Service account validation must read the input as data" unless account_step.fetch("env", {}).fetch("DEPLOY_SERVICE_ACCOUNT", nil) == "${{ inputs.deploy_service_account }}"
+abort "Service account validation must not interpolate the input into the script" if account_step.fetch("run").include?("inputs.")
+abort "Service account validation must run under bash" unless account_step.fetch("shell", nil) == "bash"
+project_id = workflow.fetch("env").fetch("PROJECT_ID")
+good_account = "site-admin@#{project_id}.iam.gserviceaccount.com"
+account_cases = {
+  "per-site account" => [good_account, true],
+  "site-deploy naming (admin)" => ["site-deploy-admin@#{project_id}.iam.gserviceaccount.com", true],
+  "site-deploy naming (publicsite)" => ["site-deploy-publicsite@#{project_id}.iam.gserviceaccount.com", true],
+  "shortest allowed name" => ["abcdef@#{project_id}.iam.gserviceaccount.com", true],
+  "longest allowed name" => ["#{"a" * 30}@#{project_id}.iam.gserviceaccount.com", true],
+  "empty" => ["", false],
+  "shared pipelines account" => ["pipelines@#{project_id}.iam.gserviceaccount.com", false],
+  "name too short" => ["abcde@#{project_id}.iam.gserviceaccount.com", false],
+  "name too long" => ["#{"a" * 31}@#{project_id}.iam.gserviceaccount.com", false],
+  "leading digit" => ["1site-admin@#{project_id}.iam.gserviceaccount.com", false],
+  "trailing hyphen" => ["site-admin-@#{project_id}.iam.gserviceaccount.com", false],
+  "uppercase" => ["Site-Admin@#{project_id}.iam.gserviceaccount.com", false],
+  "other project" => ["site-admin@other-project-123456.iam.gserviceaccount.com", false],
+  "other domain" => ["site-admin@#{project_id}.iam.example.com", false],
+  "dots are literal" => ["site-admin@#{project_id}.iamXgserviceaccount.com", false],
+  "suffix smuggling" => ["#{good_account}.evil.example", false],
+  "prefix smuggling" => ["evil #{good_account}", false],
+  "trailing newline" => ["#{good_account}\n", false],
+  "second line" => ["#{good_account}\nattacker@#{project_id}.iam.gserviceaccount.com", false],
+  "user email" => ["someone@gmail.com", false],
+}
+account_cases.each do |name, (account, expected)|
+  _stdout, stderr, status = Open3.capture3({ "PROJECT_ID" => project_id, "DEPLOY_SERVICE_ACCOUNT" => account, "WEBSITE" => "admin.cellarnode.com" }, "bash", "-euo", "pipefail", "-c", account_step.fetch("run"))
+  abort "deploy_service_account #{name}: expected accepted=#{expected}, got accepted=#{status.success?} (#{stderr.strip})" unless status.success? == expected
+end
+
+# The production gcloud commands are confined to gs://<bucket>/<hostname>/, the only prefix a per-site
+# service account is granted (object operations plus objectListPrefix, no bucket-root listing). The
+# hostname is validated first, so an empty value, slash, dot-segment or glob cannot widen the target.
+website_cases = {
+  "admin host" => ["admin.cellarnode.com", true],
+  "hyphenated host" => ["e-label.cellarnode.com", true],
+  "empty" => ["", false],
+  "bucket root slash" => ["/", false],
+  "path" => ["admin.cellarnode.com/preview", false],
+  "other prefix" => ["preview/admin", false],
+  "slash in first label" => ["preview/admin.cellarnode.com", false],
+  "slash in middle label" => ["admin.cellar/node.com", false],
+  "preview prefix trick" => ["preview/site/123.cellarnode.com", false],
+  "dot-dot segment" => ["..", false],
+  "glob" => ["*.cellarnode.com", false],
+  "uppercase" => ["Admin.cellarnode.com", false],
+  "trailing dot" => ["admin.cellarnode.com.", false],
+  "leading dot" => [".cellarnode.com", false],
+  "single label" => ["admin", false],
+  "space" => ["admin.cellarnode.com evil", false],
+  "trailing newline" => ["admin.cellarnode.com\n", false],
+}
+website_cases.each do |name, (website, expected)|
+  _stdout, stderr, status = Open3.capture3({ "PROJECT_ID" => project_id, "DEPLOY_SERVICE_ACCOUNT" => good_account, "WEBSITE" => website }, "bash", "-euo", "pipefail", "-c", account_step.fetch("run"))
+  abort "website #{name}: expected accepted=#{expected}, got accepted=#{status.success?} (#{stderr.strip})" unless status.success? == expected
+end
+
+bucket = workflow.fetch("env").fetch("GCS_BUCKET")
+site_prefix = /\Ags:\/\/\$\{GCS_BUCKET\}\/\$\{WEBSITE\}\/\z/
+deploy_runs = deploy_steps.map { |step| [step.fetch("name", step.fetch("uses", "")), step.fetch("run", "").lines.reject { |line| line.lstrip.start_with?("#") }.join] }.reject { |_name, run| run.empty? }
+production_gcloud_calls = deploy_runs.flat_map { |_name, run| run.scan(/(?<![\w-])gcloud\s+(?!warm-up)(?:\S+)\s+(?:\S+)/) }
+abort "Production path must run gcloud storage ls and rsync, got #{production_gcloud_calls.inspect}" unless production_gcloud_calls.length == 2
+abort "Production path may only run gcloud storage ls and rsync" unless production_gcloud_calls.map { |call| call.split.values_at(1, 2).join(" ") }.sort == ["storage ls", "storage rsync"]
+abort "Production path must not use gsutil or gcloud storage cp/rm/mv/buckets" if deploy_runs.any? { |_name, run| run.match?(/gsutil|gcloud storage (?:cp|rm|mv|buckets|objects)/) }
+bucket_urls = deploy_runs.flat_map { |_name, run| run.scan(%r{gs://[^\s"']*}) }
+abort "Production path must reference the bucket by URL" if bucket_urls.empty?
+abort "Production gcloud targets must be exactly gs://${GCS_BUCKET}/${WEBSITE}/, got #{bucket_urls.reject { |url| url.match?(site_prefix) }.inspect}" unless bucket_urls.all? { |url| url.match?(site_prefix) }
+abort "Production path must not hard-code a bucket or prefix" if deploy_runs.any? { |_name, run| run.include?(bucket) || run.include?("preview/") }
+
+# Parallel composite uploads write temporary objects outside the site prefix, so they must stay off.
+production_publish_env = deploy_steps.fetch(publish_index).fetch("env", {})
+abort "Production rsync must disable parallel composite uploads (they write outside the site prefix)" unless production_publish_env.fetch("CLOUDSDK_STORAGE_PARALLEL_COMPOSITE_UPLOAD_ENABLED", nil) == "False"
+abort "Production path must not re-enable composite uploads through gcloud config" if deploy_runs.any? { |_name, run| run.match?(/parallel_composite_upload/i) }
+
+# The security comment must not overstate the boundary (CEL-2768 review): the per-site account plus the
+# pipelines exclusion in crossplane-gcloud#160, and the shared-buildkitd exposure named, not hidden.
+workflow_text = File.read(workflow_path)
+abort "The production job comment must not claim the worst case equals the poisoned-dist baseline" if workflow_text.match?(/worst case equals/i)
+abort "The production job comment must name the pipelines exclusion in crossplane-gcloud#160" unless workflow_text.include?("crossplane-gcloud#160") && workflow_text.include?("pipelines exclusion")
+abort "The production job comment must name the shared buildkitd exposure" unless workflow_text.match?(/shared buildkitd client certificate/)
+
+# The rsync never follows symlinks, and the output check is repeated in the same step right before it
+# (a process left running by the build could recreate a symlink after the earlier check).
+publish_run = deploy_steps.fetch(publish_index).fetch("run")
+abort "Production rsync must pass --ignore-symlinks" unless publish_run.match?(/gcloud storage rsync\b[^\n]*--ignore-symlinks/)
+abort "Production rsync must not re-enable symlink following" if publish_run.include?("--no-ignore-symlinks")
+publish_check_index = publish_run.index("find dist \\( -type l")
+publish_rsync_index = publish_run.index("gcloud storage rsync")
+abort "Production deploy step must repeat the non-regular output check before the rsync" unless publish_check_index && publish_check_index < publish_rsync_index
+abort "Production deploy step check must match the build-output check" unless publish_run.include?(deploy_steps.fetch(outputs_index).fetch("run").lines.map(&:strip).reject(&:empty?)[1..].first)
+
+# Execute the warm-up and deploy steps against a recording gcloud to prove the real targets.
+Dir.mktmpdir do |directory|
+  File.write(File.join(directory, "sleep"), "#!/bin/sh\nexit 0\n")
+  File.chmod(0o755, File.join(directory, "sleep"))
+  log = File.join(directory, "calls.log")
+  stub_gcloud = lambda do |exit_code, message|
+    File.write(File.join(directory, "gcloud"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$STUB_LOG\"\necho \"#{message}\" >&2\nexit #{exit_code}\n")
+    File.chmod(0o755, File.join(directory, "gcloud"))
+    File.write(log, "")
+  end
+  run_step = lambda do |name, runner|
+    step = deploy_steps.fetch(step_index.call(name))
+    env = {
+      "PATH" => "#{directory}:#{ENV.fetch("PATH")}",
+      "STUB_LOG" => log,
+      "GCS_BUCKET" => bucket,
+      "WEBSITE" => "admin.cellarnode.com",
+    }
+    Dir.mkdir(File.join(directory, "dist")) unless Dir.exist?(File.join(directory, "dist"))
+    Open3.capture3(env, *runner, step.fetch("run"), chdir: directory)
+  end
+  # Production steps without `shell:` run under the runner default (sh -e), not bash.
+  posix = [File.exist?("/bin/dash") || File.exist?("/usr/bin/dash") ? "dash" : "sh", "-e", "-c"]
+
+  stub_gcloud.call(0, "")
+  _out, err, status = run_step.call("Warm gcloud credential cache", posix)
+  abort "Warm-up must succeed when the prefix lists: #{err}" unless status.success?
+  abort "Warm-up must list only the site prefix, got #{File.read(log).inspect}" unless File.read(log) == "storage ls gs://#{bucket}/admin.cellarnode.com/\n"
+
+  stub_gcloud.call(1, "ERROR: (gcloud.storage.ls) One or more URLs matched no objects.")
+  _out, err, status = run_step.call("Warm gcloud credential cache", posix)
+  abort "Warm-up must accept an empty site prefix on a first deploy: #{err}" unless status.success?
+  abort "Warm-up must not retry an empty prefix" unless File.read(log).lines.length == 1
+
+  stub_gcloud.call(1, "ERROR: (gcloud.storage.ls) HTTPError 403: caller does not have storage.objects.list access")
+  _out, _err, status = run_step.call("Warm gcloud credential cache", posix)
+  abort "Warm-up must fail closed when listing the site prefix is denied" if status.success?
+  abort "Warm-up must retry five times before failing" unless File.read(log).lines.length == 5
+
+  stub_gcloud.call(0, "")
+  File.symlink("/proc/self/environ", File.join(directory, "dist", "environment.txt"))
+  _out, _err, status = run_step.call("Deploy to production", posix)
+  abort "Deploy step must refuse a symlink that appears after the earlier check" if status.success?
+  abort "Deploy step must not call gcloud when dist holds a non-regular entry, got #{File.read(log).inspect}" unless File.read(log).empty?
+  File.delete(File.join(directory, "dist", "environment.txt"))
+
+  stub_gcloud.call(0, "")
+  _out, err, status = run_step.call("Deploy to production", posix)
+  abort "Deploy step must succeed with a working gcloud: #{err}" unless status.success?
+  abort "Deploy must rsync ./dist into the site prefix only, got #{File.read(log).inspect}" unless File.read(log).match?(%r{\Astorage rsync .* \./dist gs://#{Regexp.escape(bucket)}/admin\.cellarnode\.com/\n\z})
+end
+
+# Previews are untouched by CEL-2768: they keep the artifact hand-off and their existing identity.
+abort "Preview build must keep its artifact upload" unless jobs.fetch("build-preview").fetch("steps").any? { |step| step.fetch("uses", "").start_with?("actions/upload-artifact@") }
+%w[deploy-preview cleanup].each do |job_name|
+  job_steps = jobs.fetch(job_name).fetch("steps")
+  preview_auth = job_steps.find { |step| step.fetch("uses", "").start_with?("google-github-actions/auth@") }
+  abort "#{job_name} must keep its existing pipelines identity (previews unchanged by CEL-2768)" unless preview_auth&.fetch("with", {})&.fetch("service_account", nil) == "pipelines@${{ env.PROJECT_ID }}.iam.gserviceaccount.com"
+end
+abort "Preview deploy must keep its artifact download" unless jobs.fetch("deploy-preview").fetch("steps").any? { |step| step.fetch("uses", "").start_with?("actions/download-artifact@") }
+
+discord_deploy = jobs.fetch("discord-deploy")
+abort "Deploy notification must follow the single production job" unless Array(discord_deploy.fetch("needs")) == ["deploy-production"]
+abort "Deploy notification must report the production job result" unless discord_deploy.fetch("with").fetch("status") == "${{ needs.deploy-production.result }}"
+abort "Deploy notification must survive failure but not cancellation" unless discord_deploy.fetch("if").include?("!cancelled()") && !discord_deploy.fetch("if").include?("always()")
 
 {
   "deploy-production" => "Deploy to production",
