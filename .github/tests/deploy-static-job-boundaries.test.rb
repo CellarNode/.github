@@ -329,7 +329,16 @@ abort "Production job must hold only contents: read and id-token: write, got #{p
 abort "Production job must not grant #{forbidden_scopes & production_permissions.keys}" unless (forbidden_scopes & production_permissions.keys).empty?
 workflow_permissions = workflow["permissions"]
 abort "Workflow-level permissions must not grant write access (got #{workflow_permissions.inspect})" if workflow_permissions.is_a?(String) ? workflow_permissions.match?(/write/) : Array(workflow_permissions&.values).any? { |level| level == "write" }
-abort "Production job must not read a repository secret or the job token itself" if deep_string_values(deploy_production).any? { |value| value.match?(/secrets\.|github\.token|GITHUB_TOKEN/) }
+# CEL-2795: the ONE exception is the Discord webhook, in the env of the LAST step (the deploy notification), so the run ends when the
+# deploy ends instead of waiting for a separate notify job. Nothing else in the job may read a secret or the job token.
+secret_pattern = /secrets\.|github\.token|GITHUB_TOKEN/
+production_steps_list = deploy_production.fetch("steps")
+notify_step = production_steps_list.last
+abort "The last production step must be the Discord deploy notification" unless notify_step.fetch("name", "") == "Discord deploy notification"
+abort "Production job must not read a repository secret or the job token itself (outside the notify step)" if deep_string_values(deploy_production.merge("steps" => production_steps_list[0...-1])).any? { |value| value.match?(secret_pattern) }
+abort "The notify step may read only the Discord webhook secret, and only through its env" unless deep_string_values(notify_step.fetch("env")).grep(secret_pattern) == ["${{ secrets.DISCORD_WEBHOOK_URL }}"] && notify_step.fetch("env").fetch("WEBHOOK_URL") == "${{ secrets.DISCORD_WEBHOOK_URL }}"
+abort "The notify step must not read a secret or the job token anywhere but its env" if deep_string_values(notify_step.reject { |key, _| key == "env" }).any? { |value| value.match?(secret_pattern) }
+abort "The notify step must be continue-on-error so a notification problem never fails the deploy" unless notify_step["continue-on-error"] == true
 
 deploy_steps = deploy_production.fetch("steps")
 artifact_or_cache = /\A(?:actions\/(?:upload-artifact|download-artifact|cache(?:\/[a-z-]+)?)|[^@]*\/(?:upload-artifact|download-artifact))@/
@@ -346,7 +355,6 @@ checkout_index = deploy_steps.index { |step| step.fetch("uses", "").start_with?(
 account_index = step_index.call("Validate deploy service account")
 dependency_index = step_index.call("Validate production dependency inputs")
 install_index = step_index.call("Install dependencies")
-rebuild_index = step_index.call("Rebuild dependencies")
 build_index = step_index.call("Build production")
 outputs_index = step_index.call("Reject non-regular build outputs")
 auth_index = step_index.call("Authenticate to Google Cloud")
@@ -354,7 +362,8 @@ sdk_index = step_index.call("Set up Cloud SDK")
 warm_index = step_index.call("Warm gcloud credential cache")
 publish_index = step_index.call("Deploy to production")
 abort "Deploy service account must be validated before source is fetched" unless account_index < checkout_index
-abort "Production steps are out of order" unless checkout_index < dependency_index && dependency_index < install_index && install_index < rebuild_index && rebuild_index < build_index && build_index < outputs_index
+abort "Production must not rebuild dependencies (the install runs with --ignore-scripts in the job that holds id-token: write)" if deploy_steps.any? { |step| step.fetch("name", "") == "Rebuild dependencies" }
+abort "Production steps are out of order" unless checkout_index < dependency_index && dependency_index < install_index && install_index < build_index && build_index < outputs_index
 abort "Google Cloud authentication must come after build and output validation" unless outputs_index < auth_index && auth_index < sdk_index && sdk_index < warm_index && warm_index < publish_index
 google_steps = deploy_steps.each_index.select { |index| deploy_steps.fetch(index).fetch("uses", "").start_with?("google-github-actions/") }
 abort "No Google action may run before output validation has finished" unless google_steps.all? { |index| index > outputs_index }
@@ -461,7 +470,8 @@ abort "Production rsync must not re-enable symlink following" if publish_run.inc
 publish_check_index = publish_run.index("find dist \\( -type l")
 publish_rsync_index = publish_run.index("gcloud storage rsync")
 abort "Production deploy step must repeat the non-regular output check before the rsync" unless publish_check_index && publish_check_index < publish_rsync_index
-abort "Production deploy step check must match the build-output check" unless publish_run.include?(deploy_steps.fetch(outputs_index).fetch("run").lines.map(&:strip).reject(&:empty?)[1..].first)
+build_output_check_line = deploy_steps.fetch(outputs_index).fetch("run").lines.map(&:strip).find { |line| line.start_with?("if find dist") }
+abort "Production deploy step check must match the build-output check" unless build_output_check_line && publish_run.include?(build_output_check_line)
 
 # Execute the warm-up and deploy steps against a recording gcloud to prove the real targets.
 Dir.mktmpdir do |directory|
@@ -524,10 +534,10 @@ abort "Preview build must keep its artifact upload" unless jobs.fetch("build-pre
 end
 abort "Preview deploy must keep its artifact download" unless jobs.fetch("deploy-preview").fetch("steps").any? { |step| step.fetch("uses", "").start_with?("actions/download-artifact@") }
 
-discord_deploy = jobs.fetch("discord-deploy")
-abort "Deploy notification must follow the single production job" unless Array(discord_deploy.fetch("needs")) == ["deploy-production"]
-abort "Deploy notification must report the production job result" unless discord_deploy.fetch("with").fetch("status") == "${{ needs.deploy-production.result }}"
-abort "Deploy notification must survive failure but not cancellation" unless discord_deploy.fetch("if").include?("!cancelled()") && !discord_deploy.fetch("if").include?("always()")
+# CEL-2795: the deploy notification is the last step of deploy-production, not a job that holds this workflow's concurrency group
+# (static-deploy-<slug>-<ref>) until it gets a runner. Its contract (when it posts, the script, the secret) is pinned in
+# deploy-static-discord-in-job.test.rb.
+abort "The deploy notification must be the last step of deploy-production, not a separate discord-deploy job" if jobs.key?("discord-deploy")
 
 {
   "deploy-production" => "Deploy to production",

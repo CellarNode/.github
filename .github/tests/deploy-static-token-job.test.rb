@@ -1,0 +1,121 @@
+# CEL-2768: build and dependency code run in `deploy-production`, the job that holds `id-token: write`.
+#
+# Two rules keep that job from handing its OIDC token to code it just installed:
+#   1. In EVERY job that holds `id-token: write`, no step runs dependency lifecycle scripts: `--ignore-scripts` on the install is undone
+#      by a later `pnpm|npm|yarn rebuild`, and an install without `--ignore-scripts` runs them. (The GitHub-hosted `build-preview`
+#      holds no id-token and may rebuild.)
+#   2. In `deploy-production`, every `run:` script starts with `unset ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_ID_TOKEN_REQUEST_TOKEN`, so code
+#      those steps run cannot casually mint the job's token from its own environment. A step-level `env:` blank would be INERT (the runner sets
+#      both variables after it applies the step env: actions/runner ScriptHandler / NodeScriptActionHandler / ContainerActionHandler), so none
+#      may be used. `uses:` steps cannot be stripped (pinned actions). Not a hard boundary: code could still read the values from its parent
+#      shell's /proc/<pid>/environ; the real boundary is build-before-auth ordering plus the minimal per-site identity and the `dist` re-check.
+#
+# The test then mutates the workflow to prove each rule can fail.
+#
+# Run: ruby .github/tests/deploy-static-token-job.test.rb      (exit 0 = every rule holds)
+
+require "open3"
+require "yaml"
+
+PATH_TO_WORKFLOW = File.expand_path("../workflows/deploy-static-website.yaml", __dir__)
+OIDC_VARS = %w[ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_ID_TOKEN_REQUEST_TOKEN].freeze
+UNSET_LINE = "unset #{OIDC_VARS.join(' ')}".freeze
+REBUILD = /\b(?:pnpm|npm|yarn)\s+rebuild\b/
+INSTALL = /\b(?:pnpm|npm|yarn)\s+(?:install|i|add|ci)\b/
+
+def failures_for(workflow)
+  out = []
+  jobs = workflow.fetch("jobs")
+
+  # Rule 1: every job that holds id-token: write
+  jobs.each do |job_name, job|
+    next unless job.fetch("permissions", {}).is_a?(Hash) && job.fetch("permissions", {}).fetch("id-token", nil) == "write"
+
+    job.fetch("steps", []).each do |step|
+      run = step.fetch("run", "")
+      label = "#{job_name} / #{step.fetch('name', step.fetch('uses', 'a step'))}"
+      out << "#{label}: a job holding id-token: write must not rebuild dependencies" if run.match?(REBUILD)
+      out << "#{label}: a job holding id-token: write must install with --ignore-scripts" if run.match?(INSTALL) && !run.include?("--ignore-scripts")
+    end
+  end
+
+  # Rule 2: every run script of deploy-production starts with the unset line; no step relies on an (inert) env blank
+  production = jobs.fetch("deploy-production")
+  steps = production.fetch("steps")
+  out << "deploy-production: must not have a Rebuild dependencies step" if steps.any? { |step| step.fetch("name", "") == "Rebuild dependencies" }
+  auth_steps = steps.select { |step| step.fetch("uses", "").start_with?("google-github-actions/auth@") }
+  out << "deploy-production: must authenticate exactly once (got #{auth_steps.length})" unless auth_steps.length == 1
+  steps.each do |step|
+    label = step.fetch("name", step.fetch("uses", "a step"))
+    out << "deploy-production: step #{label.inspect} must not set the OIDC variables in env (the runner overwrites them, so the blank is inert)" if OIDC_VARS.any? { |name| step.fetch("env", {}).key?(name) }
+    next unless step.key?("run")
+
+    first = step.fetch("run").lines.map(&:strip).reject(&:empty?).first
+    out << "deploy-production: step #{label.inspect} must start its script with: #{UNSET_LINE}" unless first == UNSET_LINE
+  end
+  # The anchored dependency script the job aliases is defined in the hosted preview job; it must carry the line too.
+  anchored = workflow.fetch("jobs").fetch("build-preview").fetch("steps").find { |step| step.fetch("name", "") == "Validate preview dependency inputs" }
+  out << "the anchored dependency validation script must start with the unset line" unless anchored && anchored.fetch("run").lines.map(&:strip).reject(&:empty?).first == UNSET_LINE
+  out
+end
+
+def deep_copy(object)
+  Marshal.load(Marshal.dump(object))
+end
+
+workflow = YAML.safe_load(File.read(PATH_TO_WORKFLOW), aliases: true)
+failures = failures_for(workflow)
+
+# The line must really remove both variables for the shells the runner uses (bash, and sh for steps without `shell:`).
+%w[bash sh].each do |shell|
+  stdout, _stderr, status = Open3.capture3({ "ACTIONS_ID_TOKEN_REQUEST_URL" => "https://token.example", "ACTIONS_ID_TOKEN_REQUEST_TOKEN" => "secret" }, shell, "-e", "-c", "#{UNSET_LINE}\nenv")
+  failures << "#{UNSET_LINE} must succeed under #{shell}" unless status.success?
+  failures << "#{UNSET_LINE} must remove both variables under #{shell}" if stdout.include?("ACTIONS_ID_TOKEN_REQUEST")
+end
+
+# Control: the hosted preview build holds no id-token, so its own rebuild must not be flagged by rule 1.
+preview_rebuilds = workflow.fetch("jobs").fetch("build-preview").fetch("steps").any? { |step| step.fetch("run", "").match?(REBUILD) }
+failures << "control: build-preview is expected to keep its rebuild (it holds no id-token); the rule must not flag it" unless preview_rebuilds
+failures << "control: build-preview must hold no id-token" if workflow.fetch("jobs").fetch("build-preview").fetch("permissions", {}).key?("id-token")
+
+step = ->(wf, job, name) { wf["jobs"][job]["steps"].find { |s| s.fetch("name", s.fetch("uses", "")) == name } }
+strip_unset = ->(wf, name) { s = step.call(wf, "deploy-production", name); s["run"] = s["run"].lines.reject { |line| line.strip == UNSET_LINE }.join }
+with_unset = ->(command) { "#{UNSET_LINE}\n#{command}" }
+mutations = {
+  "a Rebuild dependencies step returns to deploy-production" => ->(wf) { wf["jobs"]["deploy-production"]["steps"].insert(8, { "name" => "Rebuild dependencies", "run" => with_unset.call("pnpm rebuild") }) },
+  "npm rebuild hidden in the Build step" => ->(wf) { step.call(wf, "deploy-production", "Build production")["run"] = with_unset.call("npm rebuild && pnpm build") },
+  "yarn rebuild in the cleanup job (it holds id-token)" => ->(wf) { wf["jobs"]["cleanup"]["steps"].first["run"] = "yarn rebuild" },
+  "an install without --ignore-scripts in deploy-preview (it holds id-token)" => ->(wf) { wf["jobs"]["deploy-preview"]["steps"].first["run"] = "pnpm install --frozen-lockfile" },
+  "the production install drops --ignore-scripts" => ->(wf) { s = step.call(wf, "deploy-production", "Install dependencies"); s["run"] = s["run"].gsub("--ignore-scripts", "") },
+  "npm ci in a new production step" => ->(wf) { wf["jobs"]["deploy-production"]["steps"].insert(8, { "name" => "More deps", "run" => with_unset.call("npm ci") }) },
+  "the unset is removed from Lint" => ->(wf) { strip_unset.call(wf, "Lint") },
+  "the unset is removed from the install" => ->(wf) { strip_unset.call(wf, "Install dependencies") },
+  "the unset is removed from Build production" => ->(wf) { strip_unset.call(wf, "Build production") },
+  "the unset is removed from Type check" => ->(wf) { strip_unset.call(wf, "Type check") },
+  "the unset is removed from the first step" => ->(wf) { strip_unset.call(wf, "Validate deploy service account") },
+  "the unset is removed from the deploy step" => ->(wf) { strip_unset.call(wf, "Deploy to production") },
+  "the unset is not the first command in Build" => ->(wf) { s = step.call(wf, "deploy-production", "Build production"); s["run"] = "echo before\n#{s['run']}" },
+  "only one variable is unset" => ->(wf) { s = step.call(wf, "deploy-production", "Lint"); s["run"] = s["run"].sub(UNSET_LINE, "unset ACTIONS_ID_TOKEN_REQUEST_URL") },
+  "an inert env blank is added to a step" => ->(wf) { (step.call(wf, "deploy-production", "Lint")["env"] ||= {})["ACTIONS_ID_TOKEN_REQUEST_URL"] = "" },
+  "an inert env blank is added to the authenticate step" => ->(wf) { (step.call(wf, "deploy-production", "Authenticate to Google Cloud")["env"] ||= {})["ACTIONS_ID_TOKEN_REQUEST_TOKEN"] = "" },
+  "a new run step without the unset is added" => ->(wf) { wf["jobs"]["deploy-production"]["steps"].insert(9, { "name" => "Extra", "run" => "echo hi" }) },
+  "a second authenticate step is added" => ->(wf) { wf["jobs"]["deploy-production"]["steps"] << { "uses" => "google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093" } },
+  "the anchored validation script loses the unset" => ->(wf) { s = wf["jobs"]["build-preview"]["steps"].find { |x| x.fetch("name", "") == "Validate preview dependency inputs" }; s["run"] = s["run"].lines.reject { |line| line.strip == UNSET_LINE }.join },
+}
+mutations.each do |label, mutate|
+  mutated = deep_copy(workflow)
+  begin
+    mutate.call(mutated)
+  rescue NoMethodError
+    failures << "mutation `#{label}` could not be applied (a step it targets is missing or renamed): update the mutation"
+    next
+  end
+  failures << "mutation `#{label}` was NOT caught" if failures_for(mutated).empty?
+end
+
+if failures.empty?
+  puts "static deploy token job: OK (no rebuild or script-running install in any id-token job, the OIDC variables unset first in every production run script, #{mutations.length} mutations caught)"
+else
+  warn "static deploy token job FAILED:\n  - #{failures.join("\n  - ")}"
+  exit 1
+end
