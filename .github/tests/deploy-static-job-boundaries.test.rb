@@ -430,6 +430,11 @@ abort "Production path must reference the bucket by URL" if bucket_urls.empty?
 abort "Production gcloud commands must stay within gs://${GCS_BUCKET}/${WEBSITE}/, got #{bucket_urls.reject { |url| url.match?(site_prefix) }.inspect}" unless bucket_urls.all? { |url| url.match?(site_prefix) }
 abort "Production path must not hard-code a bucket or prefix" if deploy_runs.any? { |_name, run| run.include?(bucket) || run.include?("preview/") }
 
+# Parallel composite uploads write temporary objects outside the site prefix, so they must stay off.
+production_publish_env = deploy_steps.fetch(publish_index).fetch("env", {})
+abort "Production rsync must disable parallel composite uploads (they write outside the site prefix)" unless production_publish_env.fetch("CLOUDSDK_STORAGE_PARALLEL_COMPOSITE_UPLOAD_ENABLED", nil) == "False"
+abort "Production path must not re-enable composite uploads through gcloud config" if deploy_runs.any? { |_name, run| run.match?(/parallel_composite_upload/i) }
+
 # Execute the warm-up and deploy steps against a recording gcloud to prove the real targets.
 Dir.mktmpdir do |directory|
   File.write(File.join(directory, "sleep"), "#!/bin/sh\nexit 0\n")
