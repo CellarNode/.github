@@ -264,6 +264,7 @@ jobs:
     container:
       image: europe-north1-docker.pkg.dev/festive-terrain-478011-h0/beveriq/ci-runner@sha256:b8ae250c5d7fae79dbbea1f62ca7613ecabd6f3efbd13b533cbdecb293cdf814
     needs: build
+    timeout-minutes: 15
     # CEL-2322: PRODUCTION deploys only from main. A workflow_dispatch on another branch still builds and pushes its
     # `branch-<slug>-<sha7>` image (see the tag step), so that image stays available for a future preview/staging
     # environment, but it never reaches production: see `deploy-skipped-notice`.
@@ -272,19 +273,33 @@ jobs:
       inputs.argocd_deploy &&
       github.ref == 'refs/heads/main' &&
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
-    strategy:
-      matrix:
-        flavor: ${{ fromJson(inputs.flavors) }}
-
+    # CEL-2795: ONE job that upserts every flavor in a loop, not a matrix leg per flavor. The caller now cancels superseded
+    # main deploys (cancel-in-progress), and with 6 matrix legs queueing on a 2-runner pool a cancel could leave some flavors
+    # on the new tag and others on the old one (skew that persists if the superseding run then fails). Migrations run as
+    # ArgoCD PreSync hooks only on the non-worker flavors (admin, public, elabel), so workers must never get ahead of the
+    # schema: non-worker flavors are upserted FIRST, in input order, then the `<worker_image_prefix>-*` flavors. Note
+    # `argocd app create --upsert` returns once the app spec is updated; auto-sync (including the admin/public PreSync
+    # migration Job) runs asynchronously. So the ordering guarantees the migrating flavors are UPSERTED first (a cancel or
+    # failure can never leave workers on a new tag whose migration was never triggered). It does NOT guarantee the migration
+    # has finished before workers roll out; that short window existed before too. A cancel between flavors can still stop
+    # the loop part-way, but it is seconds wide instead of runner-queue wide, and the superseding run re-upserts every
+    # flavor. One job also saves 5 runner pod starts on the 2-runner pool.
+    # Failure semantics match the old matrix (fail-fast defaulted to true): stop at the first failed flavor.
     steps:
-      - name: Deploy ${{ matrix.flavor }} to ArgoCD
+      - name: Deploy flavors to ArgoCD (migrating flavors first)
+        # ARC k8s-mode runs `run:` steps with plain `sh -e` (dash) unless a shell is set; the script needs bash (pipefail).
+        shell: bash
         env:
           ARGOCD_AUTH_TOKEN: ${{ secrets.ARGO_API_KEY }}
           ARGOCD_URL: argo.anli.es
           APP: ${{ inputs.app_name }}
-          FLAVOR: ${{ matrix.flavor }}
+          FLAVORS: ${{ inputs.flavors }}
           WORKER_PREFIX: ${{ inputs.worker_image_prefix }}
           DOCKER_TARGETS: ${{ inputs.docker_targets }}
+          ARGOCD_PROJECT: ${{ inputs.argocd_project }}
+          DEPLOY_PATH: ${{ inputs.deploy_path }}
+          REGISTRY: ${{ env.CONTAINER_REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.CONTAINER_REPOSITORY }}
+          TAG: ${{ needs.build.outputs.image_tag }}
         run: |
           # CEL-2320: ARGO_API_KEY is an optional workflow secret so fork PRs (no secrets) still reach the no-push build
           # jobs; only THIS deploy step needs it, and it fails fast with a clear message. Never echo the value.
@@ -292,41 +307,72 @@ jobs:
             echo "::error title=ARGO_API_KEY missing::The org secret ARGO_API_KEY is not available to this repository (add the repo to the secret's selected repositories, and pass it from the caller or use 'secrets: inherit')."
             exit 1
           fi
-          REGISTRY="${{ env.CONTAINER_REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.CONTAINER_REPOSITORY }}"
-          TAG="${{ needs.build.outputs.image_tag }}"
 
-          # Map flavor to Docker target image.
-          # CEL-609: if the flavor name is itself one of docker_targets (e.g.
-          # `elabel`), deploy that target's image directly. This generalizes the
-          # previous "first non-worker target" default, which assumed exactly one
-          # non-worker target and would mis-route a 2nd app's flavor to the wrong
-          # image. Backward-compatible: flavors that don't match a target name
-          # (admin, public, worker-*) keep the legacy mapping below.
-          if echo "$DOCKER_TARGETS" | jq -e --arg f "$FLAVOR" 'index($f) != null' >/dev/null; then
-            IMAGE_NAME="${APP}-${FLAVOR}"
-          else
-            case "$FLAVOR" in
-              ${WORKER_PREFIX}-*) IMAGE_NAME="${APP}-${WORKER_PREFIX}" ;;
-              *)
-                # Use first non-worker target as the default image
-                FIRST_TARGET=$(echo "$DOCKER_TARGETS" | jq -r --arg w "$WORKER_PREFIX" '[.[] | select(. != $w)][0]')
-                IMAGE_NAME="${APP}-${FIRST_TARGET}"
-                ;;
-            esac
-          fi
+          deploy_flavor() {
+            FLAVOR="$1"
+            # Map flavor to Docker target image.
+            # CEL-609: if the flavor name is itself one of docker_targets (e.g.
+            # `elabel`), deploy that target's image directly. This generalizes the
+            # previous "first non-worker target" default, which assumed exactly one
+            # non-worker target and would mis-route a 2nd app's flavor to the wrong
+            # image. Backward-compatible: flavors that don't match a target name
+            # (admin, public, worker-*) keep the legacy mapping below.
+            if echo "$DOCKER_TARGETS" | jq -e --arg f "$FLAVOR" 'index($f) != null' >/dev/null; then
+              IMAGE_NAME="${APP}-${FLAVOR}"
+            else
+              case "$FLAVOR" in
+                ${WORKER_PREFIX}-*) IMAGE_NAME="${APP}-${WORKER_PREFIX}" ;;
+                *)
+                  # Use first non-worker target as the default image
+                  FIRST_TARGET=$(echo "$DOCKER_TARGETS" | jq -r --arg w "$WORKER_PREFIX" '[.[] | select(. != $w)][0]')
+                  IMAGE_NAME="${APP}-${FIRST_TARGET}"
+                  ;;
+              esac
+            fi
 
-          argocd app create --upsert ${APP}-${FLAVOR} --server $ARGOCD_URL \
-            --project ${{ inputs.argocd_project }} \
-            --repo git@github.com:CellarNode/crossplane-gcloud.git \
-            --path ${{ inputs.deploy_path }}/${APP}-${FLAVOR}/ \
-            --dest-server https://kubernetes.default.svc \
-            --dest-namespace ${APP}-${FLAVOR} \
-            --kustomize-image "app-image=${REGISTRY}/${IMAGE_NAME}:${TAG}" \
-            --kustomize-common-label app.kubernetes.io/name=${APP}-${FLAVOR} \
-            --nameprefix=${FLAVOR}- \
-            --sync-policy auto \
-            --sync-option CreateNamespace=true \
-            --sync-option PruneLast=true
+            # The upsert is idempotent, so retry transient ArgoCD/API errors (backoff 5s, then 15s); the last failure is returned.
+            ATTEMPT=1
+            while true; do
+              if argocd app create --upsert ${APP}-${FLAVOR} --server $ARGOCD_URL \
+                --project ${ARGOCD_PROJECT} \
+                --repo git@github.com:CellarNode/crossplane-gcloud.git \
+                --path ${DEPLOY_PATH}/${APP}-${FLAVOR}/ \
+                --dest-server https://kubernetes.default.svc \
+                --dest-namespace ${APP}-${FLAVOR} \
+                --kustomize-image "app-image=${REGISTRY}/${IMAGE_NAME}:${TAG}" \
+                --kustomize-common-label app.kubernetes.io/name=${APP}-${FLAVOR} \
+                --nameprefix=${FLAVOR}- \
+                --sync-policy auto \
+                --sync-option CreateNamespace=true \
+                --sync-option PruneLast=true; then
+                return 0
+              fi
+              if [ "$ATTEMPT" -ge 3 ]; then
+                return 1
+              fi
+              DELAY=$(( ATTEMPT == 1 ? ${RETRY_DELAY_1:-5} : ${RETRY_DELAY_2:-15} ))
+              echo "::warning title=ArgoCD upsert retry::${APP}-${FLAVOR} attempt ${ATTEMPT} failed; retrying in ${DELAY}s"
+              sleep "$DELAY"
+              ATTEMPT=$(( ATTEMPT + 1 ))
+            done
+          }
+
+          # Non-worker flavors first (input order), then `${WORKER_PREFIX}-*` flavors (input order).
+          ORDERED=$(echo "$FLAVORS" | jq -r --arg w "$WORKER_PREFIX" '([.[] | select(startswith($w + "-") | not)] + [.[] | select(startswith($w + "-"))])[]')
+
+          # No `set -e` here: each flavor runs in its own `set -e` subshell so a failure is recorded and the loop stops
+          # (a `set -e` function called from an `if` would silently ignore failing commands inside it).
+          set +e
+          for F in $ORDERED; do
+            echo "::group::Deploy ${APP}-${F}"
+            ( set -eo pipefail; deploy_flavor "$F" )
+            RC=$?
+            echo "::endgroup::"
+            if [ "$RC" -ne 0 ]; then
+              echo "::error title=ArgoCD deploy failed::${APP}-${F} failed (exit ${RC}); flavors after it were not upserted."
+              exit 1
+            fi
+          done
 
   deploy-skipped-notice:
     # CEL-2322: say clearly why a non-main dispatch did not deploy. Future preview path (not built yet): a SEPARATE
@@ -393,13 +439,14 @@ jobs:
     # With argocd_deploy=false the `deploy` job is skipped by design, so report the BUILD result (the image is pushed and
     # the cluster pulls it) instead of a misleading "skipped" warning.
     needs: [build, deploy]
-    if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # CEL-2795: !cancelled(), not always(): a cancelled run must not wait for a runner just to post a notification (it would keep the run, and any concurrency group it is in, alive). Failures still notify.
+    if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     uses: ./.github/workflows/discord-notify.yaml
     secrets:
       DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
     with:
       event: deploy
-      status: ${{ inputs.argocd_deploy && needs.deploy.result || needs.build.result }}
+      status: ${{ needs.build.result != 'success' && needs.build.result || (inputs.argocd_deploy && needs.deploy.result || needs.build.result) }}
       deploy_mode: ${{ inputs.argocd_deploy && 'deployed' || 'published' }}
       image_tag: ${{ needs.build.outputs.image_tag }}
       tags: ${{ inputs.discord_tags }}

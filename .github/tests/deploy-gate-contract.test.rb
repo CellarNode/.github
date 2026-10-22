@@ -24,7 +24,7 @@ end
 
 # Evaluate the tiny subset of the GitHub expression language these gates use. Anything outside the allowed token set
 # aborts: a new construct must be taught to this test deliberately.
-ALLOWED = /\A(?:\s+|always\(\)|needs\.(?:deploy|build)\.result|'[^']*'|github\.ref_name|github\.ref|github\.event_name|inputs\.argocd_deploy|&&|\|\||==|!=|\(|\)|true|false)+\z/
+ALLOWED = /\A(?:\s+|always\(\)|!cancelled\(\)|needs\.(?:deploy|build)\.result|'[^']*'|github\.ref_name|github\.ref|github\.event_name|inputs\.argocd_deploy|&&|\|\||==|!=|\(|\)|true|false)+\z/
 
 def evaluate(expr, event:, ref:, argocd_deploy:)
   src = expr.to_s.gsub(/\$\{\{|\}\}/, "").gsub(/\s+/, " ").strip
@@ -125,7 +125,7 @@ end
 def value(expr, event: "push", ref: MAIN, argocd_deploy: true, deploy: "success", build: "success")
   src = expr.to_s.gsub(/\$\{\{|\}\}/, "").gsub(/\s+/, " ").strip
   abort "notification expression uses an unsupported construct: #{src}" unless src.match?(ALLOWED)
-  ruby = src.gsub("always()", "true")
+  ruby = src.gsub("!cancelled()", "true").gsub("always()", "true")
             .gsub("needs.deploy.result", deploy.inspect).gsub("needs.build.result", build.inspect)
             .gsub("github.event_name", event.inspect).gsub("github.ref", ref.inspect)
             .gsub("inputs.argocd_deploy", argocd_deploy.inspect).gsub("'", '"')
@@ -135,7 +135,10 @@ end
 def notify_failures(file, dd, notify_text)
   out = []
   # (a) runs after a skipped / failed deploy on main pushes only
-  out << "#{file}: discord-deploy must start with always() (it has to run after a skipped deploy)" unless dd["if"].to_s.strip.start_with?("always()")
+  # CEL-2795: !cancelled(), not always(): still runs after a skipped or failed deploy, but a cancelled (superseded) run must not
+  # wait for a runner just to post a notification.
+  lead = dd["if"].to_s.gsub(/\$\{\{|\}\}/, "").strip
+  out << "#{file}: discord-deploy must start with !cancelled() (it has to run after a skipped deploy, not after a cancel)" unless lead.start_with?("!cancelled()")
   [["success", true], ["skipped", true], ["failure", true]].each do |deploy_result, _|
     ran = value(dd["if"], deploy: deploy_result)
     out << "#{file}: discord-deploy did not run on a main push with deploy=#{deploy_result}" unless ran
@@ -144,7 +147,7 @@ def notify_failures(file, dd, notify_text)
   out << "#{file}: discord-deploy must not run on a branch" if value(dd["if"], ref: BRANCH)
   # (b) status: deploy result when the ArgoCD deploy ran, build result ONLY when argocd_deploy is false
   status = dd.dig("with", "status")
-  { [true, "success", "failure"] => "success", [true, "failure", "success"] => "failure", [true, "skipped", "success"] => "skipped",
+  { [true, "success", "failure"] => "failure", [true, "failure", "success"] => "failure", [true, "skipped", "success"] => "skipped", [true, "skipped", "failure"] => "failure", [true, "skipped", "cancelled"] => "cancelled",
     [false, "skipped", "success"] => "success", [false, "skipped", "failure"] => "failure" }.each do |(flag, deploy, build), want|
     got = value(status, argocd_deploy: flag, deploy: deploy, build: build)
     out << "#{file}: status with argocd_deploy=#{flag} deploy=#{deploy} build=#{build} => #{got}, expected #{want}" if got != want
@@ -173,7 +176,9 @@ WORKFLOWS.each do |file|
 
   # The notification checks must themselves be able to fail: mutate and require detection.
   muts = {
-    "discord-deploy loses always()" => ->(d, n) { [d.merge("if" => d["if"].sub("always() && ", "")), n] },
+    "discord-deploy loses !cancelled()" => ->(d, n) { [d.merge("if" => d["if"].sub("!cancelled() && ", "")), n] },
+    "discord-deploy reverts to always()" => ->(d, n) { [d.merge("if" => d["if"].sub("!cancelled()", "always()")), n] },
+    "status ignores a failed build" => ->(d, n) { [d.merge("with" => d["with"].merge("status" => "${{ inputs.argocd_deploy && needs.deploy.result || needs.build.result }}")), n] },
     "status always reports the deploy result" => ->(d, n) { [d.merge("with" => d["with"].merge("status" => "${{ needs.deploy.result }}")), n] },
     "status always reports the build result" => ->(d, n) { [d.merge("with" => d["with"].merge("status" => "${{ needs.build.result }}")), n] },
     "deploy_mode is always deployed" => ->(d, n) { [d.merge("with" => d["with"].merge("deploy_mode" => "deployed")), n] },

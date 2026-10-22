@@ -5,6 +5,7 @@ on:
     paths:
       - .github/tests/buildkit-mtls-client.test.rb
       - .github/tests/deploy-gate-contract.test.rb
+      - .github/tests/deploy-backend-loop.test.rb
       - .github/workflows/deploy-backend.yaml
       - .github/workflows/deploy-cloudrun.yaml
       - .github/workflows/discord-notify.yaml
@@ -14,6 +15,7 @@ on:
     paths:
       - .github/tests/buildkit-mtls-client.test.rb
       - .github/tests/deploy-gate-contract.test.rb
+      - .github/tests/deploy-backend-loop.test.rb
       - .github/workflows/deploy-backend.yaml
       - .github/workflows/deploy-cloudrun.yaml
       - .github/workflows/discord-notify.yaml
@@ -48,3 +50,14 @@ jobs:
           persist-credentials: false
       - name: Test the production deploy gate contract
         run: ruby .github/tests/deploy-gate-contract.test.rb
+
+  deploy-backend-loop:
+    # CEL-2795: executes the single-job deploy loop under bash with a stub argocd (order, stop at first failure, retry, shell: bash).
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Test the deploy loop behaviour
+        run: ruby .github/tests/deploy-backend-loop.test.rb

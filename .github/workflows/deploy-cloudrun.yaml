@@ -230,13 +230,14 @@ jobs:
     # With argocd_deploy=false the `deploy` job is skipped by design: report the BUILD result (the image is pushed and the
     # cluster pulls it) instead of a misleading "skipped" warning.
     needs: [build, deploy]
-    if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # CEL-2795: !cancelled(), not always(): a cancelled run must not wait for a runner just to post a notification (it would keep the run, and any concurrency group it is in, alive). Failures still notify.
+    if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     uses: ./.github/workflows/discord-notify.yaml
     secrets:
       DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
     with:
       event: deploy
-      status: ${{ inputs.argocd_deploy && needs.deploy.result || needs.build.result }}
+      status: ${{ needs.build.result != 'success' && needs.build.result || (inputs.argocd_deploy && needs.deploy.result || needs.build.result) }}
       deploy_mode: ${{ inputs.argocd_deploy && 'deployed' || 'published' }}
       image_tag: ${{ needs.build.outputs.image_tag }}
       tags: ${{ inputs.discord_tags }}
