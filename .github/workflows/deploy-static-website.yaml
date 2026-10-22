@@ -957,7 +957,7 @@ jobs:
 
   discord-deploy:
     needs: [build-production, deploy-production]
-    # CEL-2795: !cancelled(), not always(): a cancelled (superseded) run must not wait for a runner just to post a notification; it would keep holding the caller's concurrency group. Failures still notify.
+    # CEL-2795: !cancelled(), not always(): a cancelled run must not wait for a runner just to post a notification (it would keep the run, and any concurrency group it is in, alive). Failures still notify.
     if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     permissions:
       contents: read
