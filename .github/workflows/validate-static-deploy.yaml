@@ -5,6 +5,7 @@ on:
     paths:
       - .github/tests/deploy-static-lock-validator.test.rb
       - .github/tests/deploy-static-job-boundaries.test.rb
+      - .github/tests/deploy-static-token-job.test.rb
       - .github/tests/discord-metadata-boundary.test.rb
       - .github/workflows/discord-notify.yaml
       - .github/workflows/deploy-static-website.yaml
@@ -14,6 +15,7 @@ on:
     paths:
       - .github/tests/deploy-static-lock-validator.test.rb
       - .github/tests/deploy-static-job-boundaries.test.rb
+      - .github/tests/deploy-static-token-job.test.rb
       - .github/tests/discord-metadata-boundary.test.rb
       - .github/workflows/discord-notify.yaml
       - .github/workflows/deploy-static-website.yaml
@@ -36,6 +38,9 @@ jobs:
 
       - name: Test static deploy job boundaries
         run: ruby .github/tests/deploy-static-job-boundaries.test.rb
+
+      - name: Test static deploy token job rules
+        run: ruby .github/tests/deploy-static-token-job.test.rb
 
       - name: Test Discord metadata boundary
         run: ruby .github/tests/discord-metadata-boundary.test.rb

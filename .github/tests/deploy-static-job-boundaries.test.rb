@@ -346,7 +346,6 @@ checkout_index = deploy_steps.index { |step| step.fetch("uses", "").start_with?(
 account_index = step_index.call("Validate deploy service account")
 dependency_index = step_index.call("Validate production dependency inputs")
 install_index = step_index.call("Install dependencies")
-rebuild_index = step_index.call("Rebuild dependencies")
 build_index = step_index.call("Build production")
 outputs_index = step_index.call("Reject non-regular build outputs")
 auth_index = step_index.call("Authenticate to Google Cloud")
@@ -354,7 +353,8 @@ sdk_index = step_index.call("Set up Cloud SDK")
 warm_index = step_index.call("Warm gcloud credential cache")
 publish_index = step_index.call("Deploy to production")
 abort "Deploy service account must be validated before source is fetched" unless account_index < checkout_index
-abort "Production steps are out of order" unless checkout_index < dependency_index && dependency_index < install_index && install_index < rebuild_index && rebuild_index < build_index && build_index < outputs_index
+abort "Production must not rebuild dependencies (the install runs with --ignore-scripts in the job that holds id-token: write)" if deploy_steps.any? { |step| step.fetch("name", "") == "Rebuild dependencies" }
+abort "Production steps are out of order" unless checkout_index < dependency_index && dependency_index < install_index && install_index < build_index && build_index < outputs_index
 abort "Google Cloud authentication must come after build and output validation" unless outputs_index < auth_index && auth_index < sdk_index && sdk_index < warm_index && warm_index < publish_index
 google_steps = deploy_steps.each_index.select { |index| deploy_steps.fetch(index).fetch("uses", "").start_with?("google-github-actions/") }
 abort "No Google action may run before output validation has finished" unless google_steps.all? { |index| index > outputs_index }

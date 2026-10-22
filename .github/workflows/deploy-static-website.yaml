@@ -581,10 +581,15 @@ jobs:
       contents: read
       id-token: write
 
+    # Defence in depth, not a hard boundary: every step except Authenticate blanks the runner's OIDC token endpoint and request token, so
+    # build and dependency code cannot casually mint this job's token. A process the build leaves running could still read a later step's
+    # environment, which is why `dist` is re-checked right before the upload. Only the Authenticate step keeps both variables.
     steps:
       - name: Validate deploy service account
         shell: bash
         env:
+          ACTIONS_ID_TOKEN_REQUEST_URL: ""
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ""
           DEPLOY_SERVICE_ACCOUNT: ${{ inputs.deploy_service_account }}
           WEBSITE: ${{ inputs.website }}
         run: |
@@ -613,25 +618,38 @@ jobs:
         with:
           version: ${{ inputs.pnpm_version }}
           run_install: false
+        env:
+          ACTIONS_ID_TOKEN_REQUEST_URL: ""
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ""
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: ${{ inputs.node_version }}
+        env:
+          ACTIONS_ID_TOKEN_REQUEST_URL: ""
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ""
 
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
+        env:
+          ACTIONS_ID_TOKEN_REQUEST_URL: ""
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ""
 
       - name: Validate production dependency inputs
         shell: bash
         env:
+          ACTIONS_ID_TOKEN_REQUEST_URL: ""
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ""
           MANIFEST_VALIDATOR: ${{ runner.temp }}/cellarnode-production-manifest-validator.rb
           LOCK_VALIDATOR: ${{ runner.temp }}/cellarnode-production-lock-validator.rb
         run: *dependency-validation
 
       - name: Install dependencies
         env:
+          ACTIONS_ID_TOKEN_REQUEST_URL: ""
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ""
           NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/cellarnode-production-npmrc
           MANIFEST_VALIDATOR: ${{ runner.temp }}/cellarnode-production-manifest-validator.rb
           LOCK_VALIDATOR: ${{ runner.temp }}/cellarnode-production-lock-validator.rb
@@ -647,6 +665,8 @@ jobs:
 
       - name: Verify credential isolation
         env:
+          ACTIONS_ID_TOKEN_REQUEST_URL: ""
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ""
           NPM_TOKEN: ""
           NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/cellarnode-production-npmrc
         run: |
@@ -655,26 +675,32 @@ jobs:
           test ! -e .npmrc
           test ! -e .pnpmfile.cjs
 
-      - name: Rebuild dependencies
-        env:
-          NPM_TOKEN: ""
-        run: pnpm rebuild
+      # No `pnpm rebuild` here: it would run dependency lifecycle scripts again, undoing --ignore-scripts, in the job that holds
+      # `id-token: write`. pnpm 10 runs a dependency's script only when it is allowlisted (`onlyBuiltDependencies`); measured with
+      # `pnpm rebuild --reporter=ndjson`, it runs nothing for admin-v2, e-label and importer, and only @swc/core and esbuild for producer,
+      # whose build works without it. The hosted `build-preview` keeps its rebuild: it holds no id-token.
 
       - name: Type check
         if: inputs.typecheck
         env:
+          ACTIONS_ID_TOKEN_REQUEST_URL: ""
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ""
           NPM_TOKEN: ""
         run: pnpm tsc --noEmit
 
       - name: Lint
         if: inputs.lint
         env:
+          ACTIONS_ID_TOKEN_REQUEST_URL: ""
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ""
           NPM_TOKEN: ""
         run: pnpm lint
 
       - name: Build production
         shell: bash
         env:
+          ACTIONS_ID_TOKEN_REQUEST_URL: ""
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ""
           BUILD_ENV_VARS: ${{ inputs.build_env }}
           NPM_TOKEN: ""
         run: |
@@ -693,6 +719,9 @@ jobs:
             echo "Static artifact contains a non-regular entry" >&2
             exit 1
           fi
+        env:
+          ACTIONS_ID_TOKEN_REQUEST_URL: ""
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ""
 
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
@@ -704,12 +733,16 @@ jobs:
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f
         env:
+          ACTIONS_ID_TOKEN_REQUEST_URL: ""
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ""
           CLOUDSDK_CONFIG: ${{ runner.temp }}/gcloud
         with:
           skip_install: true
 
       - name: Warm gcloud credential cache
         env:
+          ACTIONS_ID_TOKEN_REQUEST_URL: ""
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ""
           CLOUDSDK_CONFIG: ${{ runner.temp }}/gcloud
           WEBSITE: ${{ inputs.website }}
         run: |
@@ -730,6 +763,8 @@ jobs:
 
       - name: Deploy to production
         env:
+          ACTIONS_ID_TOKEN_REQUEST_URL: ""
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ""
           CLOUDSDK_CONFIG: ${{ runner.temp }}/gcloud
           CLOUDSDK_STORAGE_PROCESS_COUNT: '1'
           CLOUDSDK_STORAGE_THREAD_COUNT: '1'
