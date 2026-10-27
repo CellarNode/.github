@@ -203,14 +203,6 @@ jobs:
             printf '{}\n' > "$BASE_CACHE"
           fi
 
-          # CEL-449 — `pnpm exec` resolves to the consumer's local
-          # `polyglot-i18n` devDep (lockfile-pinned). Was a bare
-          # invocation reading from the global install before CEL-449.
-          # polyglot-i18n 0.2.x stores source hashes in one cache shared by all
-          # target languages. A multi-language invocation updates that cache
-          # after its first language, causing later languages to skip changed
-          # keys they already contain. Give every language the same original
-          # cache snapshot, then keep one equivalent updated copy.
           if [[ -z "$TARGET_LANGUAGES" ]]; then
             echo "::error::Target language code must not be empty"
             exit 1
@@ -233,7 +225,84 @@ jobs:
             languages[language_index]="$language"
           done
 
-          updated_cache=""
+          for ((language_index = 0; language_index < ${#languages[@]}; language_index++)); do
+            for ((prior_index = 0; prior_index < language_index; prior_index++)); do
+              if [[ "${languages[language_index]}" == "${languages[prior_index]}" ]]; then
+                echo "::error::Duplicate target language after normalization"
+                exit 1
+              fi
+            done
+          done
+
+          PACKAGE_VERSION="$(node - <<'NODE'
+          const { createRequire } = require("node:module");
+          const { dirname, resolve } = require("node:path");
+          const { readFileSync } = require("node:fs");
+          const localRequire = createRequire(resolve(process.cwd(), "package.json"));
+          let packageDir;
+          try {
+            packageDir = dirname(localRequire.resolve("polyglot-i18n"));
+          } catch {
+            console.error("::error::Cannot resolve the consumer's installed polyglot-i18n package");
+            process.exit(1);
+          }
+          for (;;) {
+            try {
+              const pkg = JSON.parse(readFileSync(resolve(packageDir, "package.json"), "utf8"));
+              if (pkg.name === "polyglot-i18n") {
+                process.stdout.write(String(pkg.version));
+                process.exit(0);
+              }
+            } catch {}
+            const parent = dirname(packageDir);
+            if (parent === packageDir) break;
+            packageDir = parent;
+          }
+          console.error("::error::Cannot identify the consumer's installed polyglot-i18n version");
+          process.exit(1);
+          NODE
+          )"
+          case "$PACKAGE_VERSION" in
+            0.4.1|0.2.4) ;;
+            *)
+              echo "::error::Unsupported polyglot-i18n version; this workflow supports 0.2.4 and 0.4.1. Review caller compatibility before changing its lockfile pin."
+              exit 1
+              ;;
+          esac
+
+          node - "$PACKAGE_VERSION" "$BASE_CACHE" <<'NODE'
+          const fs = require("node:fs");
+          const [version, basePath] = process.argv.slice(2);
+          const fail = (message) => { console.error(`::error::${message}`); process.exit(1); };
+          const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+          const validateEntry = (entry) => {
+            if (typeof entry === "string") return true;
+            if (!isObject(entry) || Object.keys(entry).some((key) => key !== "hash" && key !== "langs")) return false;
+            if (Object.hasOwn(entry, "hash") && typeof entry.hash !== "string") return false;
+            if (!Object.hasOwn(entry, "langs")) return true;
+            if (!isObject(entry.langs)) return false;
+            return Object.values(entry.langs).every((raw) => {
+              if (raw === "stale" || raw === "accepted") return true;
+              return isObject(raw) &&
+                Object.keys(raw).every((key) => key === "hash" || key === "state") &&
+                (!Object.hasOwn(raw, "hash") || typeof raw.hash === "string") &&
+                (!Object.hasOwn(raw, "state") || raw.state === "stale" || raw.state === "accepted");
+            });
+          };
+          let base;
+          try { base = JSON.parse(fs.readFileSync(basePath, "utf8")); }
+          catch { fail("Original translation cache is malformed; no translation was attempted"); }
+          if (!isObject(base) || !Object.values(base).every((namespace) =>
+            isObject(namespace) && Object.values(namespace).every(validateEntry))) {
+            fail("Original translation cache schema is unsupported; no translation was attempted");
+          }
+          if (version === "0.2.4" && Object.values(base).some((namespace) =>
+            Object.values(namespace).some((entry) => typeof entry !== "string"))) {
+            fail("Legacy polyglot-i18n 0.2.4 requires a bare-string cache; no translation was attempted");
+          }
+          NODE
+
+          cache_files=()
           index=0
           for language in "${languages[@]}"; do
             language_cache="$RUNNER_TEMP/polyglot-cache-$index.json"
@@ -250,15 +319,183 @@ jobs:
               translate_args+=(--force)
             fi
             pnpm exec polyglot-i18n translate "${translate_args[@]}"
-            updated_cache="$language_cache"
+            cache_files+=("$language_cache")
             index=$((index + 1))
           done
 
-          if [ -z "$updated_cache" ]; then
-            echo "::error::At least one target language is required"
-            exit 1
-          fi
-          cp "$updated_cache" .polyglot-cache.json
+          cache_candidate="$RUNNER_TEMP/polyglot-cache-merged.json"
+          node - "$PACKAGE_VERSION" "$BASE_CACHE" "$cache_candidate" "${languages[@]}" -- "${cache_files[@]}" <<'NODE'
+          const fs = require("node:fs");
+          const path = require("node:path");
+          const [version, basePath, candidatePath, ...rest] = process.argv.slice(2);
+          const separator = rest.indexOf("--");
+          if (separator < 0) {
+            console.error("::error::Translation cache aggregation arguments are invalid");
+            process.exit(1);
+          }
+          const languages = rest.slice(0, separator);
+          const cachePaths = rest.slice(separator + 1);
+          if (languages.length === 0 || languages.length !== cachePaths.length) {
+            console.error("::error::Translation cache aggregation inputs are incomplete");
+            process.exit(1);
+          }
+
+          const fail = (message) => {
+            console.error(`::error::${message}`);
+            process.exit(1);
+          };
+          const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+          const dictionary = () => Object.create(null);
+          const own = (object, key) => Object.hasOwn(object, key);
+          const readJson = (file) => {
+            try {
+              const value = JSON.parse(fs.readFileSync(file, "utf8"));
+              if (!isObject(value)) fail("Translation cache must contain a JSON object");
+              return value;
+            } catch {
+              fail("Translation cache is missing or malformed; tracked cache was not updated");
+            }
+          };
+          const validateEntry = (entry) => {
+            if (typeof entry === "string") return;
+            if (!isObject(entry)) fail("Translation cache contains an unsupported entry");
+            for (const key of Object.keys(entry)) {
+              if (key !== "hash" && key !== "langs") fail("Translation cache contains an unsupported record field");
+            }
+            if (own(entry, "hash") && typeof entry.hash !== "string") fail("Translation cache hash must be a string");
+            if (own(entry, "langs")) {
+              if (!isObject(entry.langs)) fail("Translation cache languages must be an object");
+              for (const raw of Object.values(entry.langs)) {
+                if (raw === "stale" || raw === "accepted") continue;
+                if (!isObject(raw)) fail("Translation cache language provenance is malformed");
+                for (const key of Object.keys(raw)) {
+                  if (key !== "hash" && key !== "state") fail("Translation cache provenance contains an unsupported field");
+                }
+                if (own(raw, "hash") && typeof raw.hash !== "string") fail("Translation cache provenance hash must be a string");
+                if (own(raw, "state") && raw.state !== "stale" && raw.state !== "accepted") {
+                  fail("Translation cache provenance state is unsupported");
+                }
+              }
+            }
+          };
+          const validateCache = (cache) => {
+            for (const namespace of Object.values(cache)) {
+              if (!isObject(namespace)) fail("Translation cache namespace must be an object");
+              for (const entry of Object.values(namespace)) validateEntry(entry);
+            }
+          };
+          const canonical = (value) => {
+            if (Array.isArray(value)) return value.map(canonical);
+            if (!isObject(value)) return value;
+            const result = dictionary();
+            for (const key of Object.keys(value).sort()) result[key] = canonical(value[key]);
+            return result;
+          };
+          const same = (left, right) => JSON.stringify(canonical(left)) === JSON.stringify(canonical(right));
+
+          const base = readJson(basePath);
+          const outputs = cachePaths.map(readJson);
+          validateCache(base);
+          outputs.forEach(validateCache);
+
+          if (version === "0.2.4") {
+            const allBare = outputs.every((cache) =>
+              Object.values(cache).every((namespace) => Object.values(namespace).every((entry) => typeof entry === "string")),
+            );
+            if (!allBare || outputs.some((cache) => !same(cache, outputs[0]))) {
+              fail("Legacy translation cache outputs were inconsistent; tracked cache was not updated");
+            }
+            fs.writeFileSync(candidatePath, `${JSON.stringify(outputs.at(-1), null, 2)}\n`);
+            process.exit(0);
+          }
+
+          if (version !== "0.4.1") fail("Unsupported polyglot-i18n cache version");
+          const namespaceNames = Object.keys(outputs[0]).sort();
+          const keyNamesByNamespace = dictionary();
+          for (const namespace of namespaceNames) {
+            keyNamesByNamespace[namespace] = Object.keys(outputs[0][namespace]).sort();
+          }
+          for (const output of outputs.slice(1)) {
+            if (!same(Object.keys(output).sort(), namespaceNames)) {
+              fail("Translation cache outputs have inconsistent namespaces; tracked cache was not updated");
+            }
+            for (const namespace of namespaceNames) {
+              if (!same(Object.keys(output[namespace]).sort(), keyNamesByNamespace[namespace])) {
+                fail("Translation cache outputs have inconsistent keys; tracked cache was not updated");
+              }
+            }
+          }
+
+          const defaultOf = (entry) => {
+            if (typeof entry === "string") return { present: true, hash: entry, langs: dictionary() };
+            if (!entry) return { present: false, hash: undefined, langs: dictionary() };
+            const langs = dictionary();
+            for (const [language, record] of Object.entries(entry.langs ?? {})) langs[language] = record;
+            return { present: own(entry, "hash"), hash: entry.hash, langs };
+          };
+          const resolvedFor = (entry, language) => {
+            if (typeof entry === "string") return { present: true, explicit: false, record: { hash: entry } };
+            const langs = entry.langs ?? dictionary();
+            if (own(langs, language)) {
+              const raw = langs[language];
+              if (raw === "stale" || raw === "accepted") return { present: true, explicit: true, record: { state: raw } };
+              const record = dictionary();
+              if (own(raw, "hash")) record.hash = raw.hash;
+              if (own(raw, "state")) record.state = raw.state;
+              return { present: true, explicit: true, record };
+            }
+            if (own(entry, "hash")) return { present: true, explicit: false, record: { hash: entry.hash } };
+            return { present: false, explicit: false, record: dictionary() };
+          };
+          const mergeEntry = (original, languageResults) => {
+            const originalInfo = defaultOf(original);
+            const langs = dictionary();
+            for (const [otherLanguage, record] of Object.entries(originalInfo.langs)) {
+              langs[otherLanguage] = record;
+            }
+            languages.forEach((language, index) => {
+              const resolved = resolvedFor(languageResults[index], language);
+              if (!resolved.present) {
+                if (originalInfo.present) langs[language] = dictionary();
+                else delete langs[language];
+                return;
+              }
+              const record = resolved.record;
+              const hasHash = own(record, "hash");
+              const state = record.state;
+              const sameAsDefault = !state && (
+                (hasHash && originalInfo.present && record.hash === originalInfo.hash) ||
+                (!hasHash && !originalInfo.present)
+              );
+              const hashlessOverridesKnownDefault = resolved.explicit && !hasHash && originalInfo.present && !state;
+              if (sameAsDefault && !hashlessOverridesKnownDefault) delete langs[language];
+              else langs[language] = record;
+            });
+
+            if (originalInfo.present && Object.keys(langs).length === 0) return originalInfo.hash;
+            return originalInfo.present ? { hash: originalInfo.hash, langs } : { langs };
+          };
+
+          const merged = dictionary();
+          for (const [namespace, entries] of Object.entries(base)) merged[namespace] = entries;
+          for (const namespace of namespaceNames) {
+            const current = dictionary();
+            const keys = keyNamesByNamespace[namespace];
+            const originalNamespace = own(base, namespace) ? base[namespace] : undefined;
+            for (const key of keys) {
+              const languageResults = outputs.map((output) => output[namespace][key]);
+              const originalEntry = originalNamespace && own(originalNamespace, key) ? originalNamespace[key] : undefined;
+              current[key] = mergeEntry(originalEntry, languageResults);
+            }
+            merged[namespace] = current;
+          }
+          fs.writeFileSync(candidatePath, `${JSON.stringify(merged, null, 2)}\n`);
+          NODE
+
+          tracked_candidate=".polyglot-cache.json.candidate.$$"
+          trap 'rm -f "$tracked_candidate"' EXIT
+          cp "$cache_candidate" "$tracked_candidate"
+          mv -f "$tracked_candidate" .polyglot-cache.json
 
       # CEL-434 — `|| true` REMOVED. Previously this step silently swallowed
       # failures. When `i18next-cli types` failed (e.g., because the consuming
