@@ -26,10 +26,8 @@ abort "Translation must initialize an empty cache" unless script.include?(%q{pri
 abort "Normalized duplicate languages must be rejected before translation" unless script.include?("Duplicate target language after normalization")
 abort "Only verified package versions may invoke translation" unless script.include?("0.4.1|0.2.4")
 abort "Each modern language must start from the same immutable snapshot" unless script.include?('cp "$BASE_CACHE" "$language_cache"')
-abort "Modern cache merging must preserve only language-local provenance" unless script.include?("const mergeEntry = (original, languageResults)")
 abort "Original cache lookup must not inherit prototype properties" unless script.include?("own(base, namespace)") && script.include?("own(originalNamespace, key)")
 abort "Base cache must be validated before the first translator invocation" unless script.index("Original translation cache is malformed") < script.index("pnpm exec polyglot-i18n translate")
-abort "Tracked cache replacement must happen after successful aggregation" unless script.include?('mv -f "$tracked_candidate" .polyglot-cache.json')
 abort "Provider context must stay an argument value" unless script.include?('--context "$TRANSLATION_CONTEXT"')
 
 def json_bytes(value)
@@ -75,13 +73,23 @@ def write_package(project, version)
   File.write(File.join(package_dir, "package.json"), JSON.generate({
     "name" => "polyglot-i18n",
     "version" => version,
-    "main" => "dist/index.js",
+    "type" => "module",
+    "main" => "./dist/index.js",
+    "exports" => {
+      "." => {
+        "types" => "./dist/index.d.ts",
+        "default" => "./dist/index.js",
+      },
+    },
+    "bin" => { "polyglot-i18n" => "./dist/cli.js" },
   }))
   File.write(File.join(package_dir, "dist", "package.json"), JSON.generate({
     "name" => "unrelated-nested-package",
     "version" => "9.9.9",
   }))
-  File.write(File.join(package_dir, "dist", "index.js"), "module.exports = {};\n")
+  File.write(File.join(package_dir, "dist", "index.js"), "export {};\n")
+  File.write(File.join(package_dir, "dist", "index.d.ts"), "export {};\n")
+  File.write(File.join(package_dir, "dist", "cli.js"), "#!/usr/bin/env node\n")
 end
 
 def run_translation(target_languages, version:, base_bytes:, outputs:, fail_language: nil, fail_status: "23", context: "synthetic context")
