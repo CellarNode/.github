@@ -329,16 +329,13 @@ abort "Production job must hold only contents: read and id-token: write, got #{p
 abort "Production job must not grant #{forbidden_scopes & production_permissions.keys}" unless (forbidden_scopes & production_permissions.keys).empty?
 workflow_permissions = workflow["permissions"]
 abort "Workflow-level permissions must not grant write access (got #{workflow_permissions.inspect})" if workflow_permissions.is_a?(String) ? workflow_permissions.match?(/write/) : Array(workflow_permissions&.values).any? { |level| level == "write" }
-# CEL-2795: the ONE exception is the Discord webhook, in the env of the LAST step (the deploy notification), so the run ends when the
-# deploy ends instead of waiting for a separate notify job. Nothing else in the job may read a secret or the job token.
+# CEL-2795: the Discord webhook never reaches the job that runs build code and holds id-token. The deploy notification is a separate
+# `discord-deploy` job that calls the reusable notifier. No step of deploy-production may read a secret or the job token.
 secret_pattern = /secrets\.|github\.token|GITHUB_TOKEN/
-production_steps_list = deploy_production.fetch("steps")
-notify_step = production_steps_list.last
-abort "The last production step must be the Discord deploy notification" unless notify_step.fetch("name", "") == "Discord deploy notification"
-abort "Production job must not read a repository secret or the job token itself (outside the notify step)" if deep_string_values(deploy_production.merge("steps" => production_steps_list[0...-1])).any? { |value| value.match?(secret_pattern) }
-abort "The notify step may read only the Discord webhook secret, and only through its env" unless deep_string_values(notify_step.fetch("env")).grep(secret_pattern) == ["${{ secrets.DISCORD_WEBHOOK_URL }}"] && notify_step.fetch("env").fetch("WEBHOOK_URL") == "${{ secrets.DISCORD_WEBHOOK_URL }}"
-abort "The notify step must not read a secret or the job token anywhere but its env" if deep_string_values(notify_step.reject { |key, _| key == "env" }).any? { |value| value.match?(secret_pattern) }
-abort "The notify step must be continue-on-error so a notification problem never fails the deploy" unless notify_step["continue-on-error"] == true
+abort "Production job must not read a repository secret or the job token (the webhook belongs to discord-deploy)" if deep_string_values(deploy_production).any? { |value| value.match?(secret_pattern) }
+abort "Production job must not mention DISCORD_WEBHOOK_URL anywhere" if deep_string_values(deploy_production).any? { |value| value.include?("DISCORD_WEBHOOK_URL") }
+abort "Production job must carry its own non-cancelling lock" unless deploy_production["concurrency"] == { "group" => "static-deploy-prod-${{ inputs.website_slug }}", "cancel-in-progress" => false }
+abort "The workflow-level group must be unique per push run (run_id), so no notify job holds a deploy lock" unless workflow.fetch("concurrency").fetch("group") == "static-deploy-${{ inputs.website_slug }}-${{ github.event.pull_request.number || github.run_id }}"
 
 deploy_steps = deploy_production.fetch("steps")
 artifact_or_cache = /\A(?:actions\/(?:upload-artifact|download-artifact|cache(?:\/[a-z-]+)?)|[^@]*\/(?:upload-artifact|download-artifact))@/
@@ -383,23 +380,21 @@ abort "Service account validation must read the input as data" unless account_st
 abort "Service account validation must not interpolate the input into the script" if account_step.fetch("run").include?("inputs.")
 abort "Service account validation must run under bash" unless account_step.fetch("shell", nil) == "bash"
 project_id = workflow.fetch("env").fetch("PROJECT_ID")
-good_account = "site-admin@#{project_id}.iam.gserviceaccount.com"
+good_account = "site-deploy-admin@#{project_id}.iam.gserviceaccount.com"
 account_cases = {
   "per-site account" => [good_account, true],
-  "site-deploy naming (admin)" => ["site-deploy-admin@#{project_id}.iam.gserviceaccount.com", true],
   "site-deploy naming (publicsite)" => ["site-deploy-publicsite@#{project_id}.iam.gserviceaccount.com", true],
-  "shortest allowed name" => ["abcdef@#{project_id}.iam.gserviceaccount.com", true],
-  "longest allowed name" => ["#{"a" * 30}@#{project_id}.iam.gserviceaccount.com", true],
+  "site-deploy naming (digits and hyphens)" => ["site-deploy-admin-2@#{project_id}.iam.gserviceaccount.com", true],
   "empty" => ["", false],
   "shared pipelines account" => ["pipelines@#{project_id}.iam.gserviceaccount.com", false],
-  "name too short" => ["abcde@#{project_id}.iam.gserviceaccount.com", false],
-  "name too long" => ["#{"a" * 31}@#{project_id}.iam.gserviceaccount.com", false],
-  "leading digit" => ["1site-admin@#{project_id}.iam.gserviceaccount.com", false],
-  "trailing hyphen" => ["site-admin-@#{project_id}.iam.gserviceaccount.com", false],
-  "uppercase" => ["Site-Admin@#{project_id}.iam.gserviceaccount.com", false],
-  "other project" => ["site-admin@other-project-123456.iam.gserviceaccount.com", false],
-  "other domain" => ["site-admin@#{project_id}.iam.example.com", false],
-  "dots are literal" => ["site-admin@#{project_id}.iamXgserviceaccount.com", false],
+  "other per-site-looking name without the prefix" => ["site-admin@#{project_id}.iam.gserviceaccount.com", false],
+  "arbitrary service account" => ["abcdef@#{project_id}.iam.gserviceaccount.com", false],
+  "nothing after the prefix" => ["site-deploy-@#{project_id}.iam.gserviceaccount.com", false],
+  "prefix with nothing before the at sign" => ["site-deploy@#{project_id}.iam.gserviceaccount.com", false],
+  "uppercase" => ["Site-Deploy-Admin@#{project_id}.iam.gserviceaccount.com", false],
+  "other project" => ["site-deploy-admin@other-project-123456.iam.gserviceaccount.com", false],
+  "other domain" => ["site-deploy-admin@#{project_id}.iam.example.com", false],
+  "dots are literal" => ["site-deploy-admin@#{project_id}.iamXgserviceaccount.com", false],
   "suffix smuggling" => ["#{good_account}.evil.example", false],
   "prefix smuggling" => ["evil #{good_account}", false],
   "trailing newline" => ["#{good_account}\n", false],
@@ -467,10 +462,10 @@ abort "The production job comment must name the shared buildkitd exposure" unles
 publish_run = deploy_steps.fetch(publish_index).fetch("run")
 abort "Production rsync must pass --ignore-symlinks" unless publish_run.match?(/gcloud storage rsync\b[^\n]*--ignore-symlinks/)
 abort "Production rsync must not re-enable symlink following" if publish_run.include?("--no-ignore-symlinks")
-publish_check_index = publish_run.index("find dist \\( -type l")
+publish_check_index = publish_run.index("bad=$(find dist \\( -type l")
 publish_rsync_index = publish_run.index("gcloud storage rsync")
 abort "Production deploy step must repeat the non-regular output check before the rsync" unless publish_check_index && publish_check_index < publish_rsync_index
-build_output_check_line = deploy_steps.fetch(outputs_index).fetch("run").lines.map(&:strip).find { |line| line.start_with?("if find dist") }
+build_output_check_line = deploy_steps.fetch(outputs_index).fetch("run").lines.map(&:strip).find { |line| line.start_with?("bad=$(find dist") }
 abort "Production deploy step check must match the build-output check" unless build_output_check_line && publish_run.include?(build_output_check_line)
 
 # Execute the warm-up and deploy steps against a recording gcloud to prove the real targets.
@@ -534,10 +529,15 @@ abort "Preview build must keep its artifact upload" unless jobs.fetch("build-pre
 end
 abort "Preview deploy must keep its artifact download" unless jobs.fetch("deploy-preview").fetch("steps").any? { |step| step.fetch("uses", "").start_with?("actions/download-artifact@") }
 
-# CEL-2795: the deploy notification is the last step of deploy-production, not a job that holds this workflow's concurrency group
-# (static-deploy-<slug>-<ref>) until it gets a runner. Its contract (when it posts, the script, the secret) is pinned in
-# deploy-static-discord-in-job.test.rb.
-abort "The deploy notification must be the last step of deploy-production, not a separate discord-deploy job" if jobs.key?("discord-deploy")
+# CEL-2795: the deploy notification is a separate job on its own runner, after deploy-production, with no id-token. The production lock is
+# on deploy-production and the workflow group is unique per push run, so the notify job holds nothing the next deploy waits for.
+discord_deploy = jobs["discord-deploy"]
+abort "discord-deploy job must exist" unless discord_deploy
+abort "discord-deploy must need deploy-production" unless discord_deploy["needs"] == "deploy-production"
+abort "discord-deploy must run on !cancelled()" unless discord_deploy["if"].to_s.include?("!cancelled()") && !discord_deploy["if"].to_s.include?("always()")
+abort "discord-deploy must not hold id-token (got #{discord_deploy['permissions'].inspect})" unless discord_deploy["permissions"] == { "contents" => "read", "pull-requests" => "read" }
+abort "discord-deploy must call discord-notify.yaml with the deploy event" unless discord_deploy["uses"] == "./.github/workflows/discord-notify.yaml" && discord_deploy.dig("with", "event") == "deploy"
+abort "discord-deploy must report deploy-production's result" unless discord_deploy.dig("with", "status") == "${{ needs.deploy-production.result }}"
 
 {
   "deploy-production" => "Deploy to production",

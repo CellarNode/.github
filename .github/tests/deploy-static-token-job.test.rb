@@ -1,14 +1,19 @@
 # CEL-2768: build and dependency code run in `deploy-production`, the job that holds `id-token: write`.
 #
 # Two rules keep that job from handing its OIDC token to code it just installed:
-#   1. In EVERY job that holds `id-token: write`, no step runs dependency lifecycle scripts: `--ignore-scripts` on the install is undone
-#      by a later `pnpm|npm|yarn rebuild`, and an install without `--ignore-scripts` runs them. (The GitHub-hosted `build-preview`
-#      holds no id-token and may rebuild.)
+#   1. In EVERY job that may hold `id-token: write`, no step runs dependency lifecycle scripts: `--ignore-scripts` on the install is undone
+#      by a later `pnpm|npm|yarn|bun rebuild`, and an install without `--ignore-scripts` runs them. Each install command is checked on its
+#      own (an appended `npm ci`, or `&& npm install` after the pnpm install, is caught). A job "may hold" the token when its effective
+#      permissions (its own, else the workflow's) are absent, `write-all`, or a mapping with `id-token: write`, and such a job must declare
+#      `permissions:` itself: a called job inherits the caller's id-token. (The GitHub-hosted `build-preview` holds no id-token and may
+#      rebuild.)
 #   2. In `deploy-production`, every `run:` script starts with `unset ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_ID_TOKEN_REQUEST_TOKEN`, so code
 #      those steps run cannot casually mint the job's token from its own environment. A step-level `env:` blank would be INERT (the runner sets
 #      both variables after it applies the step env: actions/runner ScriptHandler / NodeScriptActionHandler / ContainerActionHandler), so none
 #      may be used. `uses:` steps cannot be stripped (pinned actions). Not a hard boundary: code could still read the values from its parent
-#      shell's /proc/<pid>/environ; the real boundary is build-before-auth ordering plus the minimal per-site identity and the `dist` re-check.
+#      shell's /proc/<pid>/environ. The only boundary is the IAM bindings (per-site deploy service account, pipelines exclusion); this rule,
+#      build-before-auth ordering and the `dist` re-check are defence in depth.
+#   3. The deploy notification is a separate `discord-deploy` job with no id-token, and `deploy-production` never sees the webhook secret.
 #
 # The test then mutates the workflow to prove each rule can fail.
 #
@@ -20,24 +25,57 @@ require "yaml"
 PATH_TO_WORKFLOW = File.expand_path("../workflows/deploy-static-website.yaml", __dir__)
 OIDC_VARS = %w[ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_ID_TOKEN_REQUEST_TOKEN].freeze
 UNSET_LINE = "unset #{OIDC_VARS.join(' ')}".freeze
-REBUILD = /\b(?:pnpm|npm|yarn)\s+rebuild\b/
-INSTALL = /\b(?:pnpm|npm|yarn)\s+(?:install|i|add|ci)\b/
+REBUILD = /\b(?:pnpm|npm|yarn|bun)\s+(?:\S+\s+)*?rebuild\b/
+INSTALL = /\b(?:pnpm|npm|yarn|bun)\b(?!\s+(?:exec|dlx)\b).*?\s(?:install|i|add|ci)\b/
+
+# A job may hold an id-token unless its effective permissions are an explicit mapping without `id-token: write`.
+def may_hold_id_token?(permissions)
+  permissions.nil? || permissions == "write-all" || (permissions.is_a?(Hash) && permissions["id-token"] == "write")
+end
+
+# Split a run script into commands: join line continuations, blank `${{ }}` expressions (their && and || are not shell operators).
+def commands_of(run)
+  run.gsub(/\$\{\{.*?\}\}/m, "EXPR").gsub(/\\\n/, " ").split(/&&|\|\||[;|\n]/)
+end
 
 def failures_for(workflow)
   out = []
   jobs = workflow.fetch("jobs")
 
-  # Rule 1: every job that holds id-token: write
+  # Rule 1: every job that may hold id-token: write
   jobs.each do |job_name, job|
-    next unless job.fetch("permissions", {}).is_a?(Hash) && job.fetch("permissions", {}).fetch("id-token", nil) == "write"
+    perms = job.key?("permissions") ? job["permissions"] : workflow["permissions"]
+    next unless may_hold_id_token?(perms)
 
+    out << "#{job_name}: must declare permissions (a called job inherits the caller's id-token)" unless job.key?("permissions")
     job.fetch("steps", []).each do |step|
       run = step.fetch("run", "")
       label = "#{job_name} / #{step.fetch('name', step.fetch('uses', 'a step'))}"
-      out << "#{label}: a job holding id-token: write must not rebuild dependencies" if run.match?(REBUILD)
-      out << "#{label}: a job holding id-token: write must install with --ignore-scripts" if run.match?(INSTALL) && !run.include?("--ignore-scripts")
+      commands_of(run).each do |cmd|
+        out << "#{label}: a job holding id-token: write must not rebuild dependencies: #{cmd.strip}" if cmd.match?(REBUILD)
+        next unless cmd.match?(INSTALL) || cmd.strip.match?(/\Ayarn\s*\z/)
+
+        out << "#{label}: every install in an id-token job needs --ignore-scripts: #{cmd.strip}" unless cmd.split.include?("--ignore-scripts")
+      end
     end
   end
+
+  # Rule 3: the notification is a separate job without id-token; deploy-production never sees the webhook
+  notify = jobs["discord-deploy"]
+  out << "discord-deploy: the deploy notification must be a separate job" unless notify
+  if notify
+    out << "discord-deploy: must need deploy-production" unless Array(notify["needs"]).include?("deploy-production")
+    out << "discord-deploy: must declare permissions without id-token (got #{notify['permissions'].inspect})" unless notify["permissions"].is_a?(Hash) && !notify["permissions"].key?("id-token") && notify["permissions"].values.none? { |level| level == "write" }
+    out << "discord-deploy: must not have steps that run build code" if notify.key?("steps")
+  end
+  webhook_hit = lambda do |value|
+    case value
+    when Hash then value.any? { |key, inner| webhook_hit.call(key) || webhook_hit.call(inner) }
+    when Array then value.any? { |inner| webhook_hit.call(inner) }
+    else value.to_s.include?("DISCORD_WEBHOOK_URL")
+    end
+  end
+  out << "deploy-production: must not reference DISCORD_WEBHOOK_URL anywhere" if webhook_hit.call(jobs.fetch("deploy-production"))
 
   # Rule 2: every run script of deploy-production starts with the unset line; no step relies on an (inert) env blank
   production = jobs.fetch("deploy-production")
@@ -86,6 +124,19 @@ mutations = {
   "npm rebuild hidden in the Build step" => ->(wf) { step.call(wf, "deploy-production", "Build production")["run"] = with_unset.call("npm rebuild && pnpm build") },
   "yarn rebuild in the cleanup job (it holds id-token)" => ->(wf) { wf["jobs"]["cleanup"]["steps"].first["run"] = "yarn rebuild" },
   "an install without --ignore-scripts in deploy-preview (it holds id-token)" => ->(wf) { wf["jobs"]["deploy-preview"]["steps"].first["run"] = "pnpm install --frozen-lockfile" },
+  "an `npm ci` line appended to the production install step" => ->(wf) { s = step.call(wf, "deploy-production", "Install dependencies"); s["run"] = "#{s['run']}\nnpm ci\n" },
+  "`&& npm install` after the pnpm install" => ->(wf) { s = step.call(wf, "deploy-production", "Install dependencies"); s["run"] = s["run"].sub("--ignore-pnpmfile", "--ignore-pnpmfile && npm install") },
+  "`pnpm --dir . install` without --ignore-scripts" => ->(wf) { wf["jobs"]["cleanup"]["steps"].first["run"] = "pnpm --dir . install" },
+  "`bun install` in the cleanup job" => ->(wf) { wf["jobs"]["cleanup"]["steps"].first["run"] = "bun install" },
+  "bare `yarn` in the cleanup job" => ->(wf) { wf["jobs"]["cleanup"]["steps"].first["run"] = "yarn" },
+  "`bun rebuild` in the cleanup job" => ->(wf) { wf["jobs"]["cleanup"]["steps"].first["run"] = "bun rebuild" },
+  "a second install with --ignore-scripts only on the first" => ->(wf) { wf["jobs"]["deploy-preview"]["steps"].first["run"] = "pnpm install --ignore-scripts\npnpm add left-pad" },
+  "an id-token job without its own permissions (workflow level absent)" => ->(wf) { wf["jobs"]["cleanup"].delete("permissions"); wf["jobs"]["cleanup"]["steps"].first["run"] = "pnpm install --ignore-scripts" },
+  "write-all permissions with a bare install" => ->(wf) { wf["jobs"]["cleanup"]["permissions"] = "write-all"; wf["jobs"]["cleanup"]["steps"].first["run"] = "pnpm install" },
+  "workflow-level id-token write and a job without permissions" => ->(wf) { wf["permissions"] = { "id-token" => "write" }; wf["jobs"]["build-preview"].delete("permissions") },
+  "discord-deploy gains id-token" => ->(wf) { wf["jobs"]["discord-deploy"]["permissions"]["id-token"] = "write" },
+  "discord-deploy is removed" => ->(wf) { wf["jobs"].delete("discord-deploy") },
+  "the webhook secret returns to deploy-production" => ->(wf) { (step.call(wf, "deploy-production", "Lint")["env"] ||= {})["WEBHOOK_URL"] = "${{ secrets.DISCORD_WEBHOOK_URL }}" },
   "the production install drops --ignore-scripts" => ->(wf) { s = step.call(wf, "deploy-production", "Install dependencies"); s["run"] = s["run"].gsub("--ignore-scripts", "") },
   "npm ci in a new production step" => ->(wf) { wf["jobs"]["deploy-production"]["steps"].insert(8, { "name" => "More deps", "run" => with_unset.call("npm ci") }) },
   "the unset is removed from Lint" => ->(wf) { strip_unset.call(wf, "Lint") },
