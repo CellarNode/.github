@@ -584,16 +584,14 @@ jobs:
     # below never holds a lock that the next deploy of the same site would have to wait for. cancel-in-progress: false only protects the RUNNING
     # deploy. GitHub keeps at most ONE pending job per concurrency group and cancels an older pending job when a newer one queues, and ARC does
     # not start jobs in FIFO order, so an older run A can become pending after a newer run B and cancel B. The .deploy/sha marker stops the site
-    # going backwards, but it cannot guarantee that the newest commit deploys. The "Warn when a newer commit is not deployed" step and the
-    # Discord notice report that case, and the fix is to re-run the production run of the newest main commit.
+    # going backwards, but it cannot guarantee that the newest commit deploys. The check-newer-head job and the Discord notice report that
+    # case (they run no build code, so this job never needs a GitHub token), and the fix is to re-run the production run of the newest main commit.
     concurrency:
       group: static-deploy-prod-${{ inputs.website_slug }}
       cancel-in-progress: false
     outputs:
       # 'true' only when the rsync and the final marker write both succeeded. 'false' for a stale skip. Empty when the step failed or never ran.
       deployed: ${{ steps.deploy.outputs.deployed }}
-      # The newer commit on main that is not deployed, or empty.
-      newer_head: ${{ steps.newer.outputs.newer_head }}
     container:
       image: europe-north1-docker.pkg.dev/festive-terrain-478011-h0/beveriq/ci-runner@sha256:b8ae250c5d7fae79dbbea1f62ca7613ecabd6f3efbd13b533cbdecb293cdf814
     permissions:
@@ -845,33 +843,44 @@ jobs:
           [ "$written" = 1 ] || { echo "Could not write the deploy marker after the rsync" >&2; exit 1; }
           echo "deployed=true" >> "$GITHUB_OUTPUT"
 
-      # Liveness check, run only after a real deploy. It warns and never fails: the deploy above has already succeeded, so a lookup
-      # failure here must not turn it red. github.token reaches this step only after all build code has run, and only into git.
+  # Liveness check. It runs in its own job, never in deploy-production: that job runs build code, so it must not hold a GitHub token (a
+  # build could rewrite .git/config, shim PATH or set BASH_ENV to capture it). This job runs no build code and no git: it asks the REST API
+  # whether the branch head is a descendant of the deployed commit (compare status "ahead"). It warns and never fails: the deploy has already
+  # succeeded, so a lookup failure only produces a warning.
+  check-newer-head:
+    needs: deploy-production
+    if: ${{ !cancelled() && needs.deploy-production.outputs.deployed == 'true' }}
+    runs-on: self-hosted-k8s
+    container:
+      image: europe-north1-docker.pkg.dev/festive-terrain-478011-h0/beveriq/ci-runner@sha256:b8ae250c5d7fae79dbbea1f62ca7613ecabd6f3efbd13b533cbdecb293cdf814
+    permissions:
+      contents: read
+    outputs:
+      # The newer commit on main that is not deployed, or empty.
+      newer_head: ${{ steps.newer.outputs.newer_head }}
+    steps:
       - name: Warn when a newer commit is not deployed
         id: newer
-        if: ${{ steps.deploy.outputs.deployed == 'true' }}
-        shell: bash
+        continue-on-error: true
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         env:
-          GH_TOKEN: ${{ github.token }}
-          CLOUDSDK_CONFIG: ${{ runner.temp }}/gcloud
-        run: |
-          unset ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_ID_TOKEN_REQUEST_TOKEN
-          set -uo pipefail
-          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
-          export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="http.https://github.com/.extraheader" GIT_CONFIG_VALUE_0="AUTHORIZATION: basic ${auth}"
-          if ! head=$(git ls-remote origin "refs/heads/${GITHUB_REF_NAME}" | cut -f1) || [ -z "$head" ]; then
-            echo "::warning::could not look up the head of ${GITHUB_REF_NAME}; check manually that the newest commit is deployed"
-            exit 0
-          fi
-          [ "$head" = "$GITHUB_SHA" ] && exit 0
-          if ! git fetch --quiet --no-tags --filter=blob:none origin "$head" 2>/dev/null; then
-            echo "::warning::could not fetch ${head} to compare it with ${GITHUB_SHA}; check manually that the newest commit is deployed"
-            exit 0
-          fi
-          if git merge-base --is-ancestor "$GITHUB_SHA" "$head"; then
-            echo "::warning::newer commit ${head} on main is not deployed; re-run its production run"
-            echo "newer_head=${head}" >> "$GITHUB_OUTPUT"
-          fi
+          DEPLOYED_SHA: ${{ github.sha }}
+          BRANCH: ${{ github.ref_name }}
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const deployed = process.env.DEPLOYED_SHA;
+            try {
+              const { data: head } = await github.rest.repos.getCommit({ owner, repo, ref: process.env.BRANCH });
+              if (head.sha === deployed) return;
+              const { data: cmp } = await github.rest.repos.compareCommitsWithBasehead({ owner, repo, basehead: `${deployed}...${head.sha}` });
+              if (cmp.status === 'ahead') {
+                core.warning(`newer commit ${head.sha} on main is not deployed; re-run its production run`);
+                core.setOutput('newer_head', head.sha);
+              }
+            } catch (error) {
+              core.warning(`could not check whether a newer commit on main is deployed (${error.message}); check manually`);
+            }
 
   deploy-preview:
     needs: [preview-policy, build-preview]
@@ -1109,7 +1118,7 @@ jobs:
       status: ${{ github.event.pull_request.merged && 'merged' || 'closed' }}
 
   discord-deploy:
-    needs: deploy-production
+    needs: [deploy-production, check-newer-head]
     # CEL-2795: a separate job on its own runner, so the webhook secret never reaches the job that runs build code and holds id-token.
     # !cancelled(), not always(): a cancelled run must not wait for a runner just to post. Failures still notify. The production lock is on
     # deploy-production and the workflow group is unique per push run, so this job holds nothing the next deploy waits for.
@@ -1130,5 +1139,5 @@ jobs:
         || needs.deploy-production.result == 'cancelled' && 'Not deployed: the production deploy was cancelled, re-run the newest main run'
         || needs.deploy-production.result == 'skipped' && 'Not deployed: the production deploy was skipped'
         || 'Production deploy failed' }}
-      deploy_note: ${{ needs.deploy-production.outputs.newer_head != '' && format('WARNING, newer commit {0} on main is not deployed. Re-run its production run.', needs.deploy-production.outputs.newer_head) || '' }}
+      deploy_note: ${{ needs.check-newer-head.outputs.newer_head != '' && format('WARNING, newer commit {0} on main is not deployed. Re-run its production run.', needs.check-newer-head.outputs.newer_head) || '' }}
       tags: ${{ inputs.discord_tags }}

@@ -331,13 +331,9 @@ workflow_permissions = workflow["permissions"]
 abort "Workflow-level permissions must not grant write access (got #{workflow_permissions.inspect})" if workflow_permissions.is_a?(String) ? workflow_permissions.match?(/write/) : Array(workflow_permissions&.values).any? { |level| level == "write" }
 # CEL-2795: the Discord webhook never reaches the job that runs build code and holds id-token. The deploy notification is a separate
 # `discord-deploy` job that calls the reusable notifier. No step of deploy-production may read a secret or the job token.
-secret_pattern = /secrets\.|github\.token|GITHUB_TOKEN/
-# One exception: the final "Warn when a newer commit is not deployed" step reads the job token (contents: read) so `git ls-remote` can see the
-# private repository. It runs after the deploy and all build code, passes the token only into git, and may not appear anywhere else.
-newer_step = deploy_production.fetch("steps").find { |step| step.fetch("name", "") == "Warn when a newer commit is not deployed" }
-abort "The newer-commit step must be the last step and read github.token only through GH_TOKEN" unless newer_step && deploy_production.fetch("steps").last.equal?(newer_step) && newer_step.fetch("env", {})["GH_TOKEN"] == "${{ github.token }}" && deep_string_values(newer_step.fetch("run")).none? { |value| value.match?(secret_pattern) }
-production_without_newer = deploy_production.merge("steps" => deploy_production.fetch("steps").reject { |step| step.equal?(newer_step) }, "outputs" => {})
-abort "Production job must not read a repository secret or the job token (the webhook belongs to discord-deploy; only the newer-commit step reads the token)" if deep_string_values(production_without_newer).any? { |value| value.match?(secret_pattern) }
+secret_pattern = /secrets\.|github\.token|GITHUB_TOKEN|GH_TOKEN/
+# No exception: the newer-commit liveness check lives in the separate check-newer-head job, so deploy-production never holds a GitHub token.
+abort "Production job must not read a repository secret or the job token (the webhook belongs to discord-deploy; the token belongs to no build job)" if deep_string_values(deploy_production).any? { |value| value.match?(secret_pattern) }
 abort "Production job must not mention DISCORD_WEBHOOK_URL anywhere" if deep_string_values(deploy_production).any? { |value| value.include?("DISCORD_WEBHOOK_URL") }
 abort "Production job must carry its own non-cancelling lock" unless deploy_production["concurrency"] == { "group" => "static-deploy-prod-${{ inputs.website_slug }}", "cancel-in-progress" => false }
 abort "The workflow-level group must be unique per push run (run_id), so no notify job holds a deploy lock" unless workflow.fetch("concurrency").fetch("group") == "static-deploy-${{ inputs.website_slug }}-${{ github.event.pull_request.number || github.run_id }}"
@@ -640,34 +636,40 @@ Dir.mktmpdir do |directory|
   Open3.capture3("git", "init", "-q", "--bare", remote)
   git.call("remote", "add", "origin", remote)
   git.call("push", "-q", "origin", "#{c2}:refs/heads/main")
-  newer_step = deploy_steps.fetch(step_index.call("Warn when a newer commit is not deployed"))
-  run_newer = lambda do |sha, extra = {}|
-    File.write(step_output, "")
-    env = { "PATH" => ENV.fetch("PATH"), "GITHUB_SHA" => sha, "GITHUB_REF_NAME" => "main", "GITHUB_OUTPUT" => step_output, "GH_TOKEN" => "dummy-token", "CLOUDSDK_CONFIG" => directory }.merge(extra)
-    Open3.capture3(env, "bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", newer_step.fetch("run"), chdir: directory)
-  end
-  out, err, status = run_newer.call(c2)
-  abort "No newer commit: the step must succeed quietly: #{err}" unless status.success? && !out.include?("::warning::") && File.read(step_output).empty?
-  # Push c3 (a descendant of c2) to main from a scratch clone.
-  clone = File.join(directory, "clone")
-  Open3.capture3("git", "clone", "-q", remote, clone)
-  Open3.capture3("git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "c3", chdir: clone)
-  c3, = Open3.capture3("git", "rev-parse", "HEAD", chdir: clone)
-  c3 = c3.strip
-  Open3.capture3("git", "push", "-q", "origin", "HEAD:refs/heads/main", chdir: clone)
-  out, err, status = run_newer.call(c2)
-  abort "A newer descendant on main: the step must still succeed: #{err}" unless status.success?
-  abort "A newer descendant on main must warn, got #{out.inspect}" unless out.include?("::warning::newer commit #{c3} on main is not deployed; re-run its production run")
-  abort "A newer descendant on main must export newer_head, got #{File.read(step_output).inspect}" unless File.read(step_output) == "newer_head=#{c3}\n"
-  # A head that is NOT a descendant of the deployed commit (diverged) is not a missed deploy of newer work.
-  out, err, status = run_newer.call(d1)
-  abort "A diverged head must not warn about a newer commit, got #{out.inspect} #{err.inspect}" unless status.success? && !out.include?("newer commit") && File.read(step_output).empty?
-  # A lookup failure warns and never fails the (already successful) deploy.
-  out, _err, status = run_newer.call(c2, "GITHUB_REF_NAME" => "no-such-branch")
-  abort "A failed lookup must not fail the deploy" unless status.success?
-  abort "A failed lookup must warn, got #{out.inspect}" unless out.include?("::warning::could not look up the head of no-such-branch")
-  abort "A failed lookup must not export newer_head" unless File.read(step_output).empty?
 end
+
+# F1: the newer-commit check runs the real github-script body against a mocked REST API (no checkout, no git, no token in deploy-production).
+check_job = jobs.fetch("check-newer-head")
+check_script = check_job.fetch("steps").first.fetch("with").fetch("script")
+run_newer_check = lambda do |deployed, head, compare_status, lookup_error: false|
+  Open3.capture3(
+    { "DEPLOYED_SHA" => deployed, "BRANCH" => "main", "HEAD_SHA" => head, "COMPARE_STATUS" => compare_status, "LOOKUP_ERROR" => lookup_error ? "1" : "", "SCRIPT" => check_script },
+    "node", "-e", <<~'JAVASCRIPT'
+      const AsyncFunction = Object.getPrototypeOf(async () => null).constructor;
+      const outputs = {};
+      const github = { rest: { repos: {
+        getCommit: async ({ ref }) => { if (process.env.LOOKUP_ERROR) throw new Error('boom'); if (ref !== 'main') throw new Error('wrong ref ' + ref); return { data: { sha: process.env.HEAD_SHA } }; },
+        compareCommitsWithBasehead: async ({ basehead }) => { if (basehead !== `${process.env.DEPLOYED_SHA}...${process.env.HEAD_SHA}`) throw new Error('wrong basehead ' + basehead); return { data: { status: process.env.COMPARE_STATUS } }; },
+      } } };
+      const core = { warning: m => console.log(`::warning::${m}`), setOutput: (k, v) => { outputs[k] = v; }, setFailed: m => { throw new Error(m); } };
+      new AsyncFunction('github', 'context', 'core', process.env.SCRIPT)(github, { repo: { owner: 'CellarNode', repo: 'site' } }, core)
+        .then(() => console.log('OUTPUTS ' + JSON.stringify(outputs)))
+        .catch(error => { console.error(error.message); process.exitCode = 1; });
+    JAVASCRIPT
+  )
+end
+deployed_sha = "a" * 40
+newer_sha = "b" * 40
+out, err, status = run_newer_check.call(deployed_sha, deployed_sha, "identical")
+abort "No newer commit: the check must succeed quietly: #{err}" unless status.success? && !out.include?("::warning::") && out.include?("OUTPUTS {}")
+out, err, status = run_newer_check.call(deployed_sha, newer_sha, "ahead")
+abort "A newer descendant on main must warn and export newer_head: #{err} #{out}" unless status.success? && out.include?("::warning::newer commit #{newer_sha} on main is not deployed; re-run its production run") && out.include?(%(OUTPUTS {"newer_head":"#{newer_sha}"}))
+%w[diverged behind].each do |compare_status|
+  out, err, status = run_newer_check.call(deployed_sha, newer_sha, compare_status)
+  abort "A #{compare_status} head must not warn about a newer commit: #{err} #{out}" unless status.success? && !out.include?("newer commit") && out.include?("OUTPUTS {}")
+end
+out, err, status = run_newer_check.call(deployed_sha, newer_sha, "ahead", lookup_error: true)
+abort "A failed lookup must warn and never fail the check: #{err} #{out}" unless status.success? && out.include?("::warning::could not check whether a newer commit on main is deployed") && out.include?("OUTPUTS {}")
 
 # Previews are untouched by CEL-2768: they keep the artifact hand-off and their existing identity.
 abort "Preview build must keep its artifact upload" unless jobs.fetch("build-preview").fetch("steps").any? { |step| step.fetch("uses", "").start_with?("actions/upload-artifact@") }
@@ -682,7 +684,7 @@ abort "Preview deploy must keep its artifact download" unless jobs.fetch("deploy
 # on deploy-production and the workflow group is unique per push run, so the notify job holds nothing the next deploy waits for.
 discord_deploy = jobs["discord-deploy"]
 abort "discord-deploy job must exist" unless discord_deploy
-abort "discord-deploy must need deploy-production" unless discord_deploy["needs"] == "deploy-production"
+abort "discord-deploy must need deploy-production and check-newer-head" unless discord_deploy["needs"] == ["deploy-production", "check-newer-head"]
 abort "discord-deploy must run on !cancelled()" unless discord_deploy["if"].to_s.include?("!cancelled()") && !discord_deploy["if"].to_s.include?("always()")
 abort "discord-deploy must not hold id-token (got #{discord_deploy['permissions'].inspect})" unless discord_deploy["permissions"] == { "contents" => "read", "pull-requests" => "read" }
 abort "discord-deploy must call discord-notify.yaml with the deploy event" unless discord_deploy["uses"] == "./.github/workflows/discord-notify.yaml" && discord_deploy.dig("with", "event") == "deploy"
@@ -692,7 +694,7 @@ def evaluate_notice_expression(expression, result:, deployed:, newer_head:)
   source = expression.strip.sub(/\A\$\{\{/, "").sub(/\}\}\z/, "").gsub(/\s+/, " ").strip
   tokens = source.scan(/'(?:[^']|'')*'|&&|\|\||==|!=|[(),]|[A-Za-z_][\w.-]*/)
   abort "Unsupported discord-deploy expression: #{source}" unless source.gsub(/'(?:[^']|'')*'|&&|\|\||==|!=|[(),]|[A-Za-z_][\w.-]*|\s+/, "").empty?
-  vars = { "needs.deploy-production.result" => result, "needs.deploy-production.outputs.deployed" => deployed, "needs.deploy-production.outputs.newer_head" => newer_head }
+  vars = { "needs.deploy-production.result" => result, "needs.deploy-production.outputs.deployed" => deployed, "needs.check-newer-head.outputs.newer_head" => newer_head }
   position = 0
   truthy = ->(value) { !(value.nil? || value == "" || value == false) }
   peek = -> { tokens[position] }

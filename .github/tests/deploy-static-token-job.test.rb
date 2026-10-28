@@ -98,19 +98,30 @@ def failures_for(workflow)
   checkout = production_steps.find { |step| step.fetch("uses", "").start_with?("actions/checkout@") }
   out << "deploy-production: the checkout needs fetch-depth: 0 for the ancestry check" unless checkout && checkout.fetch("with", {})["fetch-depth"] == 0
   out << "deploy-production: the checkout needs filter: blob:none so full history stays cheap" unless checkout && checkout.fetch("with", {})["filter"] == "blob:none"
-  # F1: the liveness warning, after a real deploy only, never failing the deploy
-  newer = production_steps.find { |step| step.fetch("name", "") == "Warn when a newer commit is not deployed" } || {}
-  newer_run = newer.fetch("run", "")
-  out << "deploy-production: the newer-commit step must run only after a real deploy (deploy output == 'true')" unless newer["if"].to_s.include?("steps.deploy.outputs.deployed == 'true'")
-  out << "deploy-production: the newer-commit step must warn with ::warning::newer commit and export newer_head" unless newer_run.include?('::warning::newer commit ${head} on main is not deployed; re-run its production run') && newer_run.include?('newer_head=${head}')
-  out << "deploy-production: the newer-commit step must read the branch head with git ls-remote" unless newer_run.include?('git ls-remote origin "refs/heads/${GITHUB_REF_NAME}"')
-  out << "deploy-production: the newer-commit step must never fail the deploy (no exit 1, no set -e)" if newer_run.match?(/exit [1-9]/) || newer_run.match?(/^\s*set -[a-z]*e/)
-  out << "deploy-production: a lookup failure in the newer-commit step must warn" unless newer_run.scan("::warning::could not").length == 2
+  # F1: the liveness warning lives in its own job: no build code, no git, no checkout, and deploy-production holds no GitHub token at all
+  check = jobs["check-newer-head"] || {}
+  check_script = check.fetch("steps", []).map { |step| step.dig("with", "script").to_s }.join("\n")
+  out << "check-newer-head: must exist and need deploy-production" unless check["needs"] == "deploy-production"
+  out << "check-newer-head: must run only after a real deploy (deployed output == 'true')" unless check["if"].to_s.include?("needs.deploy-production.outputs.deployed == 'true'")
+  out << "check-newer-head: must hold only contents: read (got #{check['permissions'].inspect})" unless check["permissions"] == { "contents" => "read" }
+  out << "check-newer-head: must use the REST API, with no checkout, run script or git" if check.fetch("steps", []).any? { |step| step.fetch("uses", "").start_with?("actions/checkout@") || step.key?("run") } || check_script.include?("git ")
+  out << "check-newer-head: must warn with ::warning::newer commit (core.warning) and export newer_head" unless check_script.include?("core.warning(`newer commit ${head.sha} on main is not deployed; re-run its production run`)") && check_script.include?("core.setOutput('newer_head', head.sha)")
+  out << "check-newer-head: must compare through the REST API and treat only status ahead as newer" unless check_script.include?("compareCommitsWithBasehead") && check_script.include?("cmp.status === 'ahead'") && check_script.include?("repos.getCommit")
+  out << "check-newer-head: must never fail the deploy (continue-on-error and a catch that only warns)" unless check.fetch("steps", []).all? { |step| step["continue-on-error"] == true } && check_script.include?("catch (error)") && !check_script.include?("setFailed") && !check_script.match?(/\bthrow\b/)
+  out << "check-newer-head: must export the newer_head job output" unless check.dig("outputs", "newer_head") == "${{ steps.newer.outputs.newer_head }}"
+  out << "deploy-production: must not have the newer-commit step (it runs build code, so no GitHub token may live there)" if production_steps.any? { |step| step.fetch("name", "") == "Warn when a newer commit is not deployed" }
+  token_hit = lambda do |value|
+    case value
+    when Hash then value.any? { |key, inner| token_hit.call(key) || token_hit.call(inner) }
+    when Array then value.any? { |inner| token_hit.call(inner) }
+    else value.to_s.match?(/github\.token|GITHUB_TOKEN|GH_TOKEN|secrets\.GITHUB_TOKEN/)
+    end
+  end
+  out << "deploy-production: must never reference github.token, GITHUB_TOKEN or GH_TOKEN in any step" if token_hit.call(jobs.fetch("deploy-production"))
   outputs = jobs.fetch("deploy-production").fetch("outputs", {})
   out << "deploy-production: must export a deployed job output from the deploy step" unless outputs["deployed"] == "${{ steps.deploy.outputs.deployed }}"
-  out << "deploy-production: must export a newer_head job output from the newer-commit step" unless outputs["newer_head"] == "${{ steps.newer.outputs.newer_head }}"
   out << "deploy-production: the deploy step needs id: deploy" unless (production_steps.find { |step| step.fetch("name", "") == "Deploy to production" } || {})["id"] == "deploy"
-  out << "discord-deploy: must report not-deployed outcomes separately from a deploy (uses deploy_title and the deployed output)" unless notify && notify.dig("with", "deploy_title").to_s.include?("outputs.deployed") && notify.dig("with", "status").to_s.include?("outputs.deployed") && notify.dig("with", "deploy_note").to_s.include?("outputs.newer_head")
+  out << "discord-deploy: must report not-deployed outcomes separately from a deploy (uses deploy_title and the deployed output)" unless notify && notify.dig("with", "deploy_title").to_s.include?("outputs.deployed") && notify.dig("with", "status").to_s.include?("outputs.deployed") && notify.dig("with", "deploy_note").to_s.include?("needs.check-newer-head.outputs.newer_head") && Array(notify["needs"]).include?("check-newer-head")
   webhook_hit = lambda do |value|
     case value
     when Hash then value.any? { |key, inner| webhook_hit.call(key) || webhook_hit.call(inner) }
@@ -191,10 +202,19 @@ mutations = {
   "a stale skip stops emitting deployed=false" => ["a stale skip must emit deployed=false", ->(wf) { s = step.call(wf, "deploy-production", "Deploy to production"); s["run"] = s["run"].sub(%(echo "deployed=false" >> "$GITHUB_OUTPUT"\n), "") }],
   "the missing-marker arm accepts a 404" => ["no 404 arm", ->(wf) { s = step.call(wf, "deploy-production", "Deploy to production"); s["run"] = s["run"].sub('*"matched no objects"*) ;;', '*"matched no objects"* | *404*) ;;') }],
   "the malformed-marker error loses the recovery" => ["must name the operator recovery", ->(wf) { s = step.call(wf, "deploy-production", "Deploy to production"); s["run"] = s["run"].sub("Live marker is not a commit sha: ${last}. ${recovery}", "Live marker is not a commit sha: ${last}") }],
-  "the newer-commit step is removed" => ["the newer-commit step must run only after a real deploy", ->(wf) { wf["jobs"]["deploy-production"]["steps"].reject! { |x| x.fetch("name", "") == "Warn when a newer commit is not deployed" } }],
-  "the newer-commit step can fail the deploy" => ["must never fail the deploy", ->(wf) { s = step.call(wf, "deploy-production", "Warn when a newer commit is not deployed"); s["run"] = "#{s['run']}\nexit 1\n" }],
-  "the newer-commit step loses its warning" => ["must warn with ::warning::newer commit", ->(wf) { s = step.call(wf, "deploy-production", "Warn when a newer commit is not deployed"); s["run"] = s["run"].sub("::warning::newer commit", "newer commit") }],
+  "the newer-commit job is removed" => ["check-newer-head: must exist", ->(wf) { wf["jobs"].delete("check-newer-head") }],
+  "the newer-commit job runs on a deploy that did not happen" => ["must run only after a real deploy", ->(wf) { wf["jobs"]["check-newer-head"]["if"] = "${{ !cancelled() }}" }],
+  "the newer-commit job gains a write permission" => ["must hold only contents: read", ->(wf) { wf["jobs"]["check-newer-head"]["permissions"]["pull-requests"] = "write" }],
+  "the newer-commit job checks out and runs git" => ["must use the REST API, with no checkout, run script or git", ->(wf) { wf["jobs"]["check-newer-head"]["steps"].unshift({ "uses" => "actions/checkout@11d5960a326750d5838078e36cf38b85af677262" }) }],
+  "the newer-commit job can fail the deploy" => ["must never fail the deploy", ->(wf) { wf["jobs"]["check-newer-head"]["steps"].first.delete("continue-on-error") }],
+  "the newer-commit job loses its warning" => ["must warn with ::warning::newer commit", ->(wf) { s = wf["jobs"]["check-newer-head"]["steps"].first["with"]; s["script"] = s["script"].sub("core.warning(`newer commit", "console.log(`newer commit") }],
+  "the newer-commit job treats any compare status as newer" => ["treat only status ahead as newer", ->(wf) { s = wf["jobs"]["check-newer-head"]["steps"].first["with"]; s["script"] = s["script"].sub("cmp.status === 'ahead'", "true") }],
+  "the newer-commit step returns to deploy-production" => ["must not have the newer-commit step", ->(wf) { wf["jobs"]["deploy-production"]["steps"] << { "name" => "Warn when a newer commit is not deployed", "run" => with_unset.call("true") } }],
+  "deploy-production gets GH_TOKEN" => ["must never reference github.token, GITHUB_TOKEN or GH_TOKEN", ->(wf) { (step.call(wf, "deploy-production", "Lint")["env"] ||= {})["GH_TOKEN"] = "x" }],
+  "deploy-production reads github.token" => ["must never reference github.token, GITHUB_TOKEN or GH_TOKEN", ->(wf) { (step.call(wf, "deploy-production", "Lint")["env"] ||= {})["T"] = "${{ github.token }}" }],
+  "deploy-production reads secrets.GITHUB_TOKEN" => ["must never reference github.token, GITHUB_TOKEN or GH_TOKEN", ->(wf) { (step.call(wf, "deploy-production", "Lint")["env"] ||= {})["T"] = "${{ secrets.GITHUB_TOKEN }}" }],
   "the deployed job output is removed" => ["must export a deployed job output", ->(wf) { wf["jobs"]["deploy-production"]["outputs"].delete("deployed") }],
+  "discord-deploy stops waiting for the newer-commit job" => ["must report not-deployed outcomes separately", ->(wf) { wf["jobs"]["discord-deploy"]["needs"] = "deploy-production" }],
   "discord-deploy reports the raw job result again" => ["must report not-deployed outcomes separately", ->(wf) { wf["jobs"]["discord-deploy"]["with"].delete("deploy_title") }],
   "the webhook secret returns to deploy-production" => ["must not reference DISCORD_WEBHOOK_URL anywhere", ->(wf) { (step.call(wf, "deploy-production", "Lint")["env"] ||= {})["WEBHOOK_URL"] = "${{ secrets.DISCORD_WEBHOOK_URL }}" }],
   "the marker read is removed" => ["the marker read must come before the rsync", ->(wf) { s = step.call(wf, "deploy-production", "Deploy to production"); s["run"] = s["run"].sub('gcloud storage cat "$marker"', "true") }],
