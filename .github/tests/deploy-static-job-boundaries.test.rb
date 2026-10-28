@@ -630,12 +630,6 @@ Dir.mktmpdir do |directory|
   abort "Three failed marker writes after the rsync must fail the step" if status.success?
   abort "The post-rsync marker write must be attempted exactly 3 times (plus the intent write), got #{calls.inspect}" unless calls.count { |call| call == cp_call } == 4
   abort "A step whose final marker write failed must not claim deployed, got #{deployed_output.call.inspect}" unless deployed_output.call.empty?
-
-  # F1: the newer-commit warning runs against a real remote. origin/main is c2 (the deployed commit) unless a case moves it.
-  remote = File.join(directory, "remote.git")
-  Open3.capture3("git", "init", "-q", "--bare", remote)
-  git.call("remote", "add", "origin", remote)
-  git.call("push", "-q", "origin", "#{c2}:refs/heads/main")
 end
 
 # F1: the newer-commit check runs the real github-script body against a mocked REST API (no checkout, no git, no token in deploy-production).
@@ -663,11 +657,13 @@ newer_sha = "b" * 40
 out, err, status = run_newer_check.call(deployed_sha, deployed_sha, "identical")
 abort "No newer commit: the check must succeed quietly: #{err}" unless status.success? && !out.include?("::warning::") && out.include?("OUTPUTS {}")
 out, err, status = run_newer_check.call(deployed_sha, newer_sha, "ahead")
-abort "A newer descendant on main must warn and export newer_head: #{err} #{out}" unless status.success? && out.include?("::warning::newer commit #{newer_sha} on main is not deployed; re-run its production run") && out.include?(%(OUTPUTS {"newer_head":"#{newer_sha}"}))
-%w[diverged behind].each do |compare_status|
-  out, err, status = run_newer_check.call(deployed_sha, newer_sha, compare_status)
-  abort "A #{compare_status} head must not warn about a newer commit: #{err} #{out}" unless status.success? && !out.include?("newer commit") && out.include?("OUTPUTS {}")
-end
+abort "A newer descendant on main must warn and export newer_head: #{err} #{out}" unless status.success? && out.include?("::warning::newer commit #{newer_sha} on main is not deployed yet; if its production run was cancelled, re-run it") && out.include?(%(OUTPUTS {"newer_head":"#{newer_sha}"}))
+out, err, status = run_newer_check.call(deployed_sha, newer_sha, "behind")
+abort "A behind head must stay quiet: #{err} #{out}" unless status.success? && !out.include?("::warning::") && out.include?("OUTPUTS {}")
+out, err, status = run_newer_check.call(deployed_sha, newer_sha, "diverged")
+abort "A diverged head must warn about the divergence and not export newer_head: #{err} #{out}" unless status.success? && out.include?("::warning::main head #{newer_sha} has diverged from the deployed commit #{deployed_sha} (force-push?); deploy it or see the runbook Deploy marker section") && out.include?("OUTPUTS {}")
+out, err, status = run_newer_check.call(deployed_sha, newer_sha, "weird")
+abort "An unknown compare status must warn and not export newer_head: #{err} #{out}" unless status.success? && out.include?("::warning::unexpected compare status weird") && out.include?("OUTPUTS {}")
 out, err, status = run_newer_check.call(deployed_sha, newer_sha, "ahead", lookup_error: true)
 abort "A failed lookup must warn and never fail the check: #{err} #{out}" unless status.success? && out.include?("::warning::could not check whether a newer commit on main is deployed") && out.include?("OUTPUTS {}")
 

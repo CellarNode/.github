@@ -837,8 +837,12 @@ jobs:
           written=0
           for i in 1 2 3; do
             if write_marker; then written=1; break; fi
-            echo "deploy marker write attempt ${i}/3 failed; retrying in $((i * 5))s" >&2
-            sleep $((i * 5))
+            if [ "$i" -lt 3 ]; then
+              echo "deploy marker write attempt ${i}/3 failed; retrying in $((i * 5))s" >&2
+              sleep $((i * 5))
+            else
+              echo "deploy marker write attempt ${i}/3 failed" >&2
+            fi
           done
           [ "$written" = 1 ] || { echo "Could not write the deploy marker after the rsync" >&2; exit 1; }
           echo "deployed=true" >> "$GITHUB_OUTPUT"
@@ -874,9 +878,14 @@ jobs:
               const { data: head } = await github.rest.repos.getCommit({ owner, repo, ref: process.env.BRANCH });
               if (head.sha === deployed) return;
               const { data: cmp } = await github.rest.repos.compareCommitsWithBasehead({ owner, repo, basehead: `${deployed}...${head.sha}` });
+              if (cmp.status === 'identical' || cmp.status === 'behind') return;
               if (cmp.status === 'ahead') {
-                core.warning(`newer commit ${head.sha} on main is not deployed; re-run its production run`);
+                core.warning(`newer commit ${head.sha} on ${process.env.BRANCH} is not deployed yet; if its production run was cancelled, re-run it`);
                 core.setOutput('newer_head', head.sha);
+              } else if (cmp.status === 'diverged') {
+                core.warning(`${process.env.BRANCH} head ${head.sha} has diverged from the deployed commit ${deployed} (force-push?); deploy it or see the runbook Deploy marker section`);
+              } else {
+                core.warning(`unexpected compare status ${cmp.status} between the deployed commit ${deployed} and ${process.env.BRANCH} head ${head.sha}; check manually`);
               }
             } catch (error) {
               core.warning(`could not check whether a newer commit on main is deployed (${error.message}); check manually`);
@@ -1135,7 +1144,7 @@ jobs:
       # and a cancelled job (typically displaced by a newer pending run) tells the reader to re-run the newest main run.
       status: ${{ needs.deploy-production.result == 'success' && (needs.deploy-production.outputs.deployed == 'true' && 'success' || 'skipped') || needs.deploy-production.result }}
       deploy_title: >-
-        ${{ needs.deploy-production.result == 'success' && (needs.deploy-production.outputs.deployed == 'true' && 'Deployed to production' || 'Not deployed: a newer commit is already live (stale run skipped)')
+        ${{ needs.deploy-production.result == 'success' && (needs.deploy-production.outputs.deployed == 'true' && 'Deployed to production' || 'Not deployed: a newer commit is recorded as live (stale run skipped)')
         || needs.deploy-production.result == 'cancelled' && 'Not deployed: the production deploy was cancelled, re-run the newest main run'
         || needs.deploy-production.result == 'skipped' && 'Not deployed: the production deploy was skipped'
         || 'Production deploy failed' }}
