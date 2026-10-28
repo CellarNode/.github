@@ -332,12 +332,7 @@ abort "Workflow-level permissions must not grant write access (got #{workflow_pe
 # CEL-2795: the Discord webhook never reaches the job that runs build code and holds id-token. The deploy notification is a separate
 # `discord-deploy` job that calls the reusable notifier. No step of deploy-production may read a secret or the job token.
 secret_pattern = /secrets\.|github\.token|GITHUB_TOKEN/
-# The one exception: the Deploy step's env carries the contents: read job token for the freshness check (a stale run must not overwrite a newer deploy).
-production_minus_deploy = deploy_production.merge("steps" => deploy_production.fetch("steps").reject { |step| step.fetch("name", "") == "Deploy to production" })
-abort "Production job must not read a repository secret or the job token outside the Deploy step (the webhook belongs to discord-deploy)" if deep_string_values(production_minus_deploy).any? { |value| value.match?(secret_pattern) }
-deploy_step_for_token = deploy_production.fetch("steps").find { |step| step.fetch("name", "") == "Deploy to production" }
-abort "The Deploy step may read only github.token, through its env GITHUB_TOKEN" unless deep_string_values(deploy_step_for_token.reject { |key, _| key == "run" }).grep(secret_pattern) == ["${{ github.token }}"] && deploy_step_for_token.fetch("env").fetch("GITHUB_TOKEN") == "${{ github.token }}"
-abort "The Deploy step script must not read secrets or github.token expressions" if deploy_step_for_token.fetch("run").match?(/secrets\.|github\.token|\$\{\{/)
+abort "Production job must not read a repository secret or the job token (the webhook belongs to discord-deploy)" if deep_string_values(deploy_production).any? { |value| value.match?(secret_pattern) }
 abort "Production job must not mention DISCORD_WEBHOOK_URL anywhere" if deep_string_values(deploy_production).any? { |value| value.include?("DISCORD_WEBHOOK_URL") }
 abort "Production job must carry its own non-cancelling lock" unless deploy_production["concurrency"] == { "group" => "static-deploy-prod-${{ inputs.website_slug }}", "cancel-in-progress" => false }
 abort "The workflow-level group must be unique per push run (run_id), so no notify job holds a deploy lock" unless workflow.fetch("concurrency").fetch("group") == "static-deploy-${{ inputs.website_slug }}-${{ github.event.pull_request.number || github.run_id }}"
@@ -442,12 +437,14 @@ bucket = workflow.fetch("env").fetch("GCS_BUCKET")
 site_prefix = /\Ags:\/\/\$\{GCS_BUCKET\}\/\$\{WEBSITE\}\/\z/
 deploy_runs = deploy_steps.map { |step| [step.fetch("name", step.fetch("uses", "")), step.fetch("run", "").lines.reject { |line| line.lstrip.start_with?("#") }.join] }.reject { |_name, run| run.empty? }
 production_gcloud_calls = deploy_runs.flat_map { |_name, run| run.scan(/(?<![\w-])gcloud\s+(?!warm-up)(?:\S+)\s+(?:\S+)/) }
-abort "Production path must run gcloud storage ls and rsync, got #{production_gcloud_calls.inspect}" unless production_gcloud_calls.length == 2
-abort "Production path may only run gcloud storage ls and rsync" unless production_gcloud_calls.map { |call| call.split.values_at(1, 2).join(" ") }.sort == ["storage ls", "storage rsync"]
-abort "Production path must not use gsutil or gcloud storage cp/rm/mv/buckets" if deploy_runs.any? { |_name, run| run.match?(/gsutil|gcloud storage (?:cp|rm|mv|buckets|objects)/) }
+abort "Production path must run gcloud storage ls and rsync, got #{production_gcloud_calls.inspect}" unless production_gcloud_calls.length == 4
+abort "Production path may only run gcloud storage ls, cat, rsync and the marker cp" unless production_gcloud_calls.map { |call| call.split.values_at(1, 2).join(" ") }.sort == ["storage cat", "storage cp", "storage ls", "storage rsync"]
+abort "Production path must not use gsutil or gcloud storage rm/mv/buckets" if deploy_runs.any? { |_name, run| run.match?(/gsutil|gcloud storage (?:rm|mv|buckets|objects)/) }
+abort "The only gcloud storage cp must write the .deploy/sha marker from stdin" unless deploy_runs.flat_map { |_name, run| run.scan(/gcloud storage cp[^\n]*/) } == ['gcloud storage cp --cache-control=no-store - "gs://${GCS_BUCKET}/${WEBSITE}/.deploy/sha"']
 bucket_urls = deploy_runs.flat_map { |_name, run| run.scan(%r{gs://[^\s"']*}) }
 abort "Production path must reference the bucket by URL" if bucket_urls.empty?
-abort "Production gcloud targets must be exactly gs://${GCS_BUCKET}/${WEBSITE}/, got #{bucket_urls.reject { |url| url.match?(site_prefix) }.inspect}" unless bucket_urls.all? { |url| url.match?(site_prefix) }
+marker_url = "gs://${GCS_BUCKET}/${WEBSITE}/.deploy/sha"
+abort "Production gcloud targets must be exactly gs://${GCS_BUCKET}/${WEBSITE}/ (or its .deploy/sha marker), got #{bucket_urls.reject { |url| url.match?(site_prefix) || url == marker_url }.inspect}" unless bucket_urls.all? { |url| url.match?(site_prefix) || url == marker_url }
 abort "Production path must not hard-code a bucket or prefix" if deploy_runs.any? { |_name, run| run.include?(bucket) || run.include?("preview/") }
 
 # Parallel composite uploads write temporary objects outside the site prefix, so they must stay off.
@@ -483,9 +480,21 @@ Dir.mktmpdir do |directory|
     File.chmod(0o755, File.join(directory, "gcloud"))
     File.write(log, "")
   end
-  File.write(File.join(directory, "curl"), "#!/bin/sh\nif [ \"${CURL_RC:-0}\" != 0 ]; then exit \"$CURL_RC\"; fi\nprintf '%s' \"$CURL_HEAD\"\n")
-  File.chmod(0o755, File.join(directory, "curl"))
-  my_sha = "a" * 40
+  # A gcloud stub for the Deploy step: `storage cat` returns the live marker (or fails), `storage cp -` records the marker written,
+  # `storage rsync` can be made to fail; every call is logged.
+  marker_out = File.join(directory, "marker-written")
+  deploy_gcloud = <<~SH
+    #!/bin/sh
+    printf '%s\\n' "$*" >> "$STUB_LOG"
+    case "$1 $2" in
+      "storage cat")
+        if [ "${MARKER_RC:-0}" != 0 ]; then echo "$MARKER_ERR" >&2; exit "$MARKER_RC"; fi
+        printf '%s\\n' "$MARKER"; exit 0 ;;
+      "storage cp") cat > "$MARKER_OUT"; exit 0 ;;
+      "storage rsync") exit "${RSYNC_RC:-0}" ;;
+    esac
+    exit 0
+  SH
   run_step = lambda do |name, runner, extra_env = {}|
     step = deploy_steps.fetch(step_index.call(name))
     env = {
@@ -493,11 +502,8 @@ Dir.mktmpdir do |directory|
       "STUB_LOG" => log,
       "GCS_BUCKET" => bucket,
       "WEBSITE" => "admin.cellarnode.com",
-      "GITHUB_SHA" => my_sha,
-      "GITHUB_TOKEN" => "ghs_test",
-      "GITHUB_REPOSITORY" => "CellarNode/example",
-      "GITHUB_REF_NAME" => "main",
-      "CURL_HEAD" => my_sha,
+      "GITHUB_SHA" => "a" * 40,
+      "MARKER_OUT" => marker_out,
     }.merge(extra_env)
     Dir.mkdir(File.join(directory, "dist")) unless Dir.exist?(File.join(directory, "dist"))
     Open3.capture3(env, *runner, step.fetch("run"), chdir: directory)
@@ -527,23 +533,52 @@ Dir.mktmpdir do |directory|
   abort "Deploy step must not call gcloud when dist holds a non-regular entry, got #{File.read(log).inspect}" unless File.read(log).empty?
   File.delete(File.join(directory, "dist", "environment.txt"))
 
-  stub_gcloud.call(0, "")
-  _out, err, status = run_step.call("Deploy to production", posix)
-  abort "Deploy step must succeed with a working gcloud: #{err}" unless status.success?
-  abort "Deploy must rsync ./dist into the site prefix only, got #{File.read(log).inspect}" unless File.read(log).match?(%r{\Astorage rsync .* \./dist gs://#{Regexp.escape(bucket)}/admin\.cellarnode\.com/\n\z})
+  # The stale-deploy guard runs against a real git history: c1 <- c2, and d1 diverged from c1.
+  git = ->(*args) { Open3.capture3("git", "-c", "user.name=t", "-c", "user.email=t@t", *args, chdir: directory).tap { |_o, e, st| abort "git #{args.join(' ')} failed: #{e}" unless st.success? }[0].strip }
+  git.call("init", "-q")
+  git.call("commit", "-q", "--allow-empty", "-m", "c1"); c1 = git.call("rev-parse", "HEAD")
+  git.call("commit", "-q", "--allow-empty", "-m", "c2"); c2 = git.call("rev-parse", "HEAD")
+  git.call("checkout", "-q", "-b", "other", c1)
+  git.call("commit", "-q", "--allow-empty", "-m", "d1"); d1 = git.call("rev-parse", "HEAD")
+  unknown = "c" * 40
+  missing = { "MARKER_RC" => "1", "MARKER_ERR" => "ERROR: (gcloud.storage.cat) No URLs matched: gs://#{bucket}/admin.cellarnode.com/.deploy/sha" }
+  deploy = lambda do |sha, extra|
+    File.write(File.join(directory, "gcloud"), deploy_gcloud)
+    File.chmod(0o755, File.join(directory, "gcloud"))
+    File.write(log, "")
+    File.delete(marker_out) if File.exist?(marker_out)
+    out, err, status = run_step.call("Deploy to production", posix, { "GITHUB_SHA" => sha }.merge(extra))
+    [out, err, status, File.read(log).lines.map(&:strip)]
+  end
+  rsync_pattern = %r{\Astorage rsync .*--delete-unmatched-destination-objects -x \^\\\.deploy/ \./dist gs://#{Regexp.escape(bucket)}/admin\.cellarnode\.com/\z}
+  assert_deployed = lambda do |label, sha, extra|
+    _out, err, status, calls = deploy.call(sha, extra)
+    abort "#{label}: the step must succeed: #{err}" unless status.success?
+    abort "#{label}: calls must be cat, rsync (excluding .deploy/), cp, got #{calls.inspect}" unless calls.length == 3 && calls[0] == "storage cat gs://#{bucket}/admin.cellarnode.com/.deploy/sha" && calls[1].match?(rsync_pattern) && calls[2] == "storage cp --cache-control=no-store - gs://#{bucket}/admin.cellarnode.com/.deploy/sha"
+    abort "#{label}: the marker written must be the deployed sha" unless File.exist?(marker_out) && File.read(marker_out).strip == sha
+  end
+  assert_not_deployed = lambda do |label, sha, extra|
+    _out, _err, status, calls = deploy.call(sha, extra)
+    abort "#{label}: the step must fail closed" if status.success?
+    abort "#{label}: nothing may be uploaded, got #{calls.inspect}" unless calls.none? { |call| call.start_with?("storage rsync", "storage cp") }
+  end
 
-  # A run that is no longer the branch head must skip the deploy (exit 0, no gcloud call); a failed lookup must fail closed.
-  File.write(log, "")
-  out, _err, status = run_step.call("Deploy to production", posix, { "CURL_HEAD" => "b" * 40 })
-  abort "A superseded run must exit 0" unless status.success?
-  abort "A superseded run must say it was superseded, got #{out.inspect}" unless out.include?("Superseded by #{"b" * 40}, skipping stale deploy")
-  abort "A superseded run must not call gcloud, got #{File.read(log).inspect}" unless File.read(log).empty?
-  _out, _err, status = run_step.call("Deploy to production", posix, { "CURL_RC" => "22" })
-  abort "A failed head lookup must fail the deploy closed" if status.success?
-  abort "A failed head lookup must not call gcloud" unless File.read(log).empty?
-  _out, _err, status = run_step.call("Deploy to production", posix, { "CURL_HEAD" => "not-a-sha" })
-  abort "A malformed head must fail the deploy closed" if status.success?
-  abort "A malformed head must not call gcloud" unless File.read(log).empty?
+  assert_deployed.call("no marker (first deploy)", c2, missing)
+  assert_deployed.call("equal sha (redeploy)", c2, { "MARKER" => c2 })
+  assert_deployed.call("a descendant of the live commit", c2, { "MARKER" => c1 })
+  out, err, status, calls = deploy.call(d1, { "MARKER" => c2 })
+  abort "Diverged history must still deploy: #{err}" unless status.success? && calls.length == 3
+  abort "Diverged history must warn, got #{out.inspect}" unless out.include?("::warning::live #{c2} and #{d1} have diverged, deploying")
+  out, _err, status, calls = deploy.call(c1, { "MARKER" => c2 })
+  abort "A stale run (ancestor of the live commit) must exit 0" unless status.success?
+  abort "A stale run must emit the warning, got #{out.inspect}" unless out.include?("::warning::stale deploy skipped: #{c1} is an ancestor of live #{c2}")
+  abort "A stale run must only read the marker, got #{calls.inspect}" unless calls.length == 1 && calls[0].start_with?("storage cat")
+  assert_not_deployed.call("a marker commit this checkout does not have", c2, { "MARKER" => unknown })
+  assert_not_deployed.call("a marker that is not a sha", c2, { "MARKER" => "not-a-sha" })
+  assert_not_deployed.call("an unreadable marker (403)", c2, { "MARKER_RC" => "1", "MARKER_ERR" => "ERROR: (gcloud.storage.cat) HTTPError 403: denied" })
+  _out, _err, status, calls = deploy.call(c2, { "MARKER" => c1, "RSYNC_RC" => "1" })
+  abort "A failed rsync must fail the step" if status.success?
+  abort "A failed rsync must not write the marker, got #{calls.inspect}" if calls.any? { |call| call.start_with?("storage cp") }
 end
 
 # Previews are untouched by CEL-2768: they keep the artifact hand-off and their existing identity.

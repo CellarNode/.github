@@ -640,6 +640,9 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
+          # Full history: the stale-deploy guard in "Deploy to production" needs the merge-base of this commit and the live one. The extra
+          # fetch time and disk are the cost of never deploying an older commit over a newer one.
+          fetch-depth: 0
 
       - name: Validate production dependency inputs
         shell: bash
@@ -765,7 +768,6 @@ jobs:
           # outside the site prefix and need storage.buckets.get, neither of which the per-site account has.
           CLOUDSDK_STORAGE_PARALLEL_COMPOSITE_UPLOAD_ENABLED: 'False'
           WEBSITE: ${{ inputs.website }}
-          GITHUB_TOKEN: ${{ github.token }}
         run: |
           unset ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_ID_TOKEN_REQUEST_TOKEN
           # Re-run the build-output check right before uploading: a process left running by the
@@ -776,23 +778,39 @@ jobs:
             echo "Static artifact contains a non-regular entry" >&2
             exit 1
           fi
-          # Freshness check: the workflow group is unique per push run, so two runs can reach the production lock out of order. Only the
-          # run whose commit is still the head of the deployed branch may write; an older one must not overwrite a newer deploy. A failed
-          # lookup fails closed. The job token has contents: read and lives only in this step's env.
-          head=$(curl -fsS --retry 3 --max-time 30 \
-            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-            -H "Accept: application/vnd.github.sha" \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/commits/${GITHUB_REF_NAME}") || exit 1
-          case "$head" in
-            "" | *[!0-9a-f]*) echo "Could not read the branch head" >&2; exit 1 ;;
-          esac
-          [ "${#head}" -eq 40 ] || { echo "Could not read the branch head" >&2; exit 1; }
-          if [ "$head" != "$GITHUB_SHA" ]; then
-            echo "Superseded by ${head}, skipping stale deploy of ${GITHUB_SHA}"
-            exit 0
+          # Stale-deploy guard. The workflow group is unique per push run, so two runs can reach the production lock out of order. The
+          # site records the commit it last deployed in .deploy/sha (written after every successful rsync). A run whose commit is a strict
+          # ANCESTOR of the live one is stale and skips; a missing marker, an equal sha (redeploy), a descendant or diverged history all
+          # deploy. This never skips a change that no newer run deployed. If the marker names a commit this checkout does not have, or the
+          # marker cannot be read for any other reason, the step fails closed. The checkout uses fetch-depth: 0 for the ancestry check.
+          err=$(mktemp)
+          if last=$(gcloud storage cat "gs://${GCS_BUCKET}/${WEBSITE}/.deploy/sha" 2>"$err"); then
+            last=$(printf '%s' "$last" | tr -d '[:space:]')
+            case "$last" in
+              "" | *[!0-9a-f]*) echo "Live marker is not a commit sha: ${last}" >&2; exit 1 ;;
+            esac
+            [ "${#last}" -eq 40 ] || { echo "Live marker is not a commit sha: ${last}" >&2; exit 1; }
+            git cat-file -e "${last}^{commit}" 2>/dev/null || { echo "Live commit ${last} is not in this checkout, refusing to deploy" >&2; exit 1; }
+            if [ "$last" != "$GITHUB_SHA" ]; then
+              if git merge-base --is-ancestor "$GITHUB_SHA" "$last"; then
+                echo "::warning::stale deploy skipped: ${GITHUB_SHA} is an ancestor of live ${last}"
+                exit 0
+              fi
+              git merge-base --is-ancestor "$last" "$GITHUB_SHA" || echo "::warning::live ${last} and ${GITHUB_SHA} have diverged, deploying"
+            fi
+          else
+            case "$(cat "$err")" in
+              *"No URLs matched"* | *"matched no objects"* | *404*) ;;
+              *) cat "$err" >&2; echo "Could not read the live deploy marker" >&2; exit 1 ;;
+            esac
           fi
-          gcloud storage rsync --recursive --ignore-symlinks --checksums-only --delete-unmatched-destination-objects \
+          rm -f "$err"
+          # .deploy/ is excluded so --delete-unmatched never removes the marker.
+          gcloud storage rsync --recursive --ignore-symlinks --checksums-only --delete-unmatched-destination-objects -x '^\.deploy/' \
             ./dist "gs://${GCS_BUCKET}/${WEBSITE}/"
+          # Record what is live. The bucket is publicly readable, so this exposes the deployed commit sha, which is acceptable (the source
+          # is the same sha the site was built from); Cache-Control: no-store keeps it from being cached.
+          printf '%s\n' "$GITHUB_SHA" | gcloud storage cp --cache-control=no-store - "gs://${GCS_BUCKET}/${WEBSITE}/.deploy/sha"
 
   deploy-preview:
     needs: [preview-policy, build-preview]

@@ -68,13 +68,21 @@ def failures_for(workflow)
     out << "discord-deploy: must declare permissions without id-token (got #{notify['permissions'].inspect})" unless notify["permissions"].is_a?(Hash) && !notify["permissions"].key?("id-token") && notify["permissions"].values.none? { |level| level == "write" }
     out << "discord-deploy: must not have steps that run build code" if notify.key?("steps")
   end
-  # Rule 4: the stale-deploy freshness check sits before the rsync and fails closed
-  deploy_run = (jobs.fetch("deploy-production").fetch("steps").find { |step| step.fetch("name", "") == "Deploy to production" } || {}).fetch("run", "")
-  fresh = deploy_run.index("commits/${GITHUB_REF_NAME}")
+  # Rule 4: the stale-deploy guard is a last-deployed marker plus an ancestry check, not a branch-head lookup
+  production_steps = jobs.fetch("deploy-production").fetch("steps")
+  deploy_run = (production_steps.find { |step| step.fetch("name", "") == "Deploy to production" } || {}).fetch("run", "")
+  marker_read = deploy_run.index('gcloud storage cat "gs://${GCS_BUCKET}/${WEBSITE}/.deploy/sha"')
   rsync = deploy_run.index("gcloud storage rsync")
-  out << "deploy-production: the freshness check (branch head lookup) must come before the rsync" unless fresh && rsync && fresh < rsync
-  out << "deploy-production: the freshness check must fail closed when the lookup fails" unless deploy_run.match?(/commits\/\$\{GITHUB_REF_NAME\}"\) \|\| exit 1/)
-  out << "deploy-production: a superseded run must skip the deploy and exit 0" unless deploy_run.match?(/if \[ "\$head" != "\$GITHUB_SHA" \]; then\n[^\n]*[Ss]uperseded[^\n]*\n\s*exit 0/)
+  marker_write = deploy_run.index("gcloud storage cp --cache-control=no-store -")
+  out << "deploy-production: the marker read must come before the rsync" unless marker_read && rsync && marker_read < rsync
+  out << "deploy-production: the marker write must come after the rsync" unless marker_write && rsync && rsync < marker_write
+  out << "deploy-production: the rsync must exclude .deploy/ so --delete-unmatched never removes the marker" unless deploy_run.match?(/gcloud storage rsync [^\n]*--delete-unmatched-destination-objects[^\n]*-x '\^\\\.deploy\/'/)
+  out << "deploy-production: the skip path must emit ::warning::stale deploy skipped" unless deploy_run.include?('echo "::warning::stale deploy skipped:')
+  out << "deploy-production: an unknown marker commit must fail closed" unless deploy_run.match?(/git cat-file -e "\$\{last\}\^\{commit\}"[^\n]*exit 1/)
+  out << "deploy-production: the guard must use an ancestry check" unless deploy_run.include?('git merge-base --is-ancestor "$GITHUB_SHA" "$last"')
+  out << "deploy-production: the guard must not look up the branch head (it fails open)" if deploy_run.include?("api.github.com") || deploy_run.include?("ls-remote")
+  checkout = production_steps.find { |step| step.fetch("uses", "").start_with?("actions/checkout@") }
+  out << "deploy-production: the checkout needs fetch-depth: 0 for the ancestry check" unless checkout && checkout.fetch("with", {})["fetch-depth"] == 0
   webhook_hit = lambda do |value|
     case value
     when Hash then value.any? { |key, inner| webhook_hit.call(key) || webhook_hit.call(inner) }
@@ -144,10 +152,14 @@ mutations = {
   "discord-deploy gains id-token" => ->(wf) { wf["jobs"]["discord-deploy"]["permissions"]["id-token"] = "write" },
   "discord-deploy is removed" => ->(wf) { wf["jobs"].delete("discord-deploy") },
   "the webhook secret returns to deploy-production" => ->(wf) { (step.call(wf, "deploy-production", "Lint")["env"] ||= {})["WEBHOOK_URL"] = "${{ secrets.DISCORD_WEBHOOK_URL }}" },
-  "the freshness check is removed" => ->(wf) { s = step.call(wf, "deploy-production", "Deploy to production"); s["run"] = s["run"].sub(/head=\$\(curl.*?\nfi\n/m, "") },
-  "the freshness check moves after the rsync" => ->(wf) { s = step.call(wf, "deploy-production", "Deploy to production"); s["run"] = "#{s['run']}\n# commits/${GITHUB_REF_NAME}\n"; s["run"] = s["run"].sub("commits/${GITHUB_REF_NAME}\")", "x\")") },
-  "the freshness lookup no longer fails closed" => ->(wf) { s = step.call(wf, "deploy-production", "Deploy to production"); s["run"] = s["run"].sub('commits/${GITHUB_REF_NAME}") || exit 1', 'commits/${GITHUB_REF_NAME}") || true') },
-  "a stale run no longer exits 0" => ->(wf) { s = step.call(wf, "deploy-production", "Deploy to production"); s["run"] = s["run"].sub("skipping stale deploy of ${GITHUB_SHA}\"\n  exit 0", "skipping stale deploy of ${GITHUB_SHA}\"\n  exit 1") },
+  "the marker read is removed" => ->(wf) { s = step.call(wf, "deploy-production", "Deploy to production"); s["run"] = s["run"].sub('gcloud storage cat "gs://${GCS_BUCKET}/${WEBSITE}/.deploy/sha"', "true") },
+  "the marker write moves before the rsync" => ->(wf) { s = step.call(wf, "deploy-production", "Deploy to production"); w = s["run"].lines.grep(/gcloud storage cp --cache-control/).first; s["run"] = s["run"].sub(w, "") ; s["run"] = s["run"].sub("gcloud storage rsync", "#{w}gcloud storage rsync") },
+  "the marker write is removed" => ->(wf) { s = step.call(wf, "deploy-production", "Deploy to production"); s["run"] = s["run"].lines.reject { |l| l.include?("gcloud storage cp --cache-control") }.join },
+  "the .deploy/ exclusion is removed" => ->(wf) { s = step.call(wf, "deploy-production", "Deploy to production"); s["run"] = s["run"].sub(" -x '^\\.deploy/'", "") },
+  "the stale warning is removed" => ->(wf) { s = step.call(wf, "deploy-production", "Deploy to production"); s["run"] = s["run"].sub("::warning::stale deploy skipped:", "stale deploy skipped:") },
+  "an unknown marker commit no longer fails closed" => ->(wf) { s = step.call(wf, "deploy-production", "Deploy to production"); s["run"] = s["run"].sub(/(git cat-file -e [^\n]*?)exit 1/, '\1true') },
+  "the guard falls back to a branch-head lookup" => ->(wf) { s = step.call(wf, "deploy-production", "Deploy to production"); s["run"] = "#{s['run']}\ncurl https://api.github.com/repos/x/commits/main\n" },
+  "the checkout loses fetch-depth: 0" => ->(wf) { wf["jobs"]["deploy-production"]["steps"].find { |x| x.fetch("uses", "").start_with?("actions/checkout@") }["with"].delete("fetch-depth") },
   "the production install drops --ignore-scripts" => ->(wf) { s = step.call(wf, "deploy-production", "Install dependencies"); s["run"] = s["run"].gsub("--ignore-scripts", "") },
   "npm ci in a new production step" => ->(wf) { wf["jobs"]["deploy-production"]["steps"].insert(8, { "name" => "More deps", "run" => with_unset.call("npm ci") }) },
   "the unset is removed from Lint" => ->(wf) { strip_unset.call(wf, "Lint") },
