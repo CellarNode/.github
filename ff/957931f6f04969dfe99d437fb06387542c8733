@@ -1,0 +1,19 @@
+.github/workflows/deploy-static-website.yaml
+  s_b9246d0625a629::t_3f9d4369df2fb2 1-3,19-20,23-24,32-33,36,38-115,118-121,123-125
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "ff957931f6f04969dfe99d437fb06387542c8733",
+  "prompts": {},
+  "sessions": {
+    "s_b9246d0625a629": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "eef2a70e-802f-4097-87fc-4092e46df79a",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "mjnong <marcusnagy@icloud.com>"
+    }
+  }
+}
