@@ -332,7 +332,12 @@ abort "Workflow-level permissions must not grant write access (got #{workflow_pe
 # CEL-2795: the Discord webhook never reaches the job that runs build code and holds id-token. The deploy notification is a separate
 # `discord-deploy` job that calls the reusable notifier. No step of deploy-production may read a secret or the job token.
 secret_pattern = /secrets\.|github\.token|GITHUB_TOKEN/
-abort "Production job must not read a repository secret or the job token (the webhook belongs to discord-deploy)" if deep_string_values(deploy_production).any? { |value| value.match?(secret_pattern) }
+# The one exception: the Deploy step's env carries the contents: read job token for the freshness check (a stale run must not overwrite a newer deploy).
+production_minus_deploy = deploy_production.merge("steps" => deploy_production.fetch("steps").reject { |step| step.fetch("name", "") == "Deploy to production" })
+abort "Production job must not read a repository secret or the job token outside the Deploy step (the webhook belongs to discord-deploy)" if deep_string_values(production_minus_deploy).any? { |value| value.match?(secret_pattern) }
+deploy_step_for_token = deploy_production.fetch("steps").find { |step| step.fetch("name", "") == "Deploy to production" }
+abort "The Deploy step may read only github.token, through its env GITHUB_TOKEN" unless deep_string_values(deploy_step_for_token.reject { |key, _| key == "run" }).grep(secret_pattern) == ["${{ github.token }}"] && deploy_step_for_token.fetch("env").fetch("GITHUB_TOKEN") == "${{ github.token }}"
+abort "The Deploy step script must not read secrets or github.token expressions" if deploy_step_for_token.fetch("run").match?(/secrets\.|github\.token|\$\{\{/)
 abort "Production job must not mention DISCORD_WEBHOOK_URL anywhere" if deep_string_values(deploy_production).any? { |value| value.include?("DISCORD_WEBHOOK_URL") }
 abort "Production job must carry its own non-cancelling lock" unless deploy_production["concurrency"] == { "group" => "static-deploy-prod-${{ inputs.website_slug }}", "cancel-in-progress" => false }
 abort "The workflow-level group must be unique per push run (run_id), so no notify job holds a deploy lock" unless workflow.fetch("concurrency").fetch("group") == "static-deploy-${{ inputs.website_slug }}-${{ github.event.pull_request.number || github.run_id }}"
@@ -478,14 +483,22 @@ Dir.mktmpdir do |directory|
     File.chmod(0o755, File.join(directory, "gcloud"))
     File.write(log, "")
   end
-  run_step = lambda do |name, runner|
+  File.write(File.join(directory, "curl"), "#!/bin/sh\nif [ \"${CURL_RC:-0}\" != 0 ]; then exit \"$CURL_RC\"; fi\nprintf '%s' \"$CURL_HEAD\"\n")
+  File.chmod(0o755, File.join(directory, "curl"))
+  my_sha = "a" * 40
+  run_step = lambda do |name, runner, extra_env = {}|
     step = deploy_steps.fetch(step_index.call(name))
     env = {
       "PATH" => "#{directory}:#{ENV.fetch("PATH")}",
       "STUB_LOG" => log,
       "GCS_BUCKET" => bucket,
       "WEBSITE" => "admin.cellarnode.com",
-    }
+      "GITHUB_SHA" => my_sha,
+      "GITHUB_TOKEN" => "ghs_test",
+      "GITHUB_REPOSITORY" => "CellarNode/example",
+      "GITHUB_REF_NAME" => "main",
+      "CURL_HEAD" => my_sha,
+    }.merge(extra_env)
     Dir.mkdir(File.join(directory, "dist")) unless Dir.exist?(File.join(directory, "dist"))
     Open3.capture3(env, *runner, step.fetch("run"), chdir: directory)
   end
@@ -518,6 +531,19 @@ Dir.mktmpdir do |directory|
   _out, err, status = run_step.call("Deploy to production", posix)
   abort "Deploy step must succeed with a working gcloud: #{err}" unless status.success?
   abort "Deploy must rsync ./dist into the site prefix only, got #{File.read(log).inspect}" unless File.read(log).match?(%r{\Astorage rsync .* \./dist gs://#{Regexp.escape(bucket)}/admin\.cellarnode\.com/\n\z})
+
+  # A run that is no longer the branch head must skip the deploy (exit 0, no gcloud call); a failed lookup must fail closed.
+  File.write(log, "")
+  out, _err, status = run_step.call("Deploy to production", posix, { "CURL_HEAD" => "b" * 40 })
+  abort "A superseded run must exit 0" unless status.success?
+  abort "A superseded run must say it was superseded, got #{out.inspect}" unless out.include?("Superseded by #{"b" * 40}, skipping stale deploy")
+  abort "A superseded run must not call gcloud, got #{File.read(log).inspect}" unless File.read(log).empty?
+  _out, _err, status = run_step.call("Deploy to production", posix, { "CURL_RC" => "22" })
+  abort "A failed head lookup must fail the deploy closed" if status.success?
+  abort "A failed head lookup must not call gcloud" unless File.read(log).empty?
+  _out, _err, status = run_step.call("Deploy to production", posix, { "CURL_HEAD" => "not-a-sha" })
+  abort "A malformed head must fail the deploy closed" if status.success?
+  abort "A malformed head must not call gcloud" unless File.read(log).empty?
 end
 
 # Previews are untouched by CEL-2768: they keep the artifact hand-off and their existing identity.

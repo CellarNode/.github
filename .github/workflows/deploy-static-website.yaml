@@ -765,6 +765,7 @@ jobs:
           # outside the site prefix and need storage.buckets.get, neither of which the per-site account has.
           CLOUDSDK_STORAGE_PARALLEL_COMPOSITE_UPLOAD_ENABLED: 'False'
           WEBSITE: ${{ inputs.website }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           unset ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_ID_TOKEN_REQUEST_TOKEN
           # Re-run the build-output check right before uploading: a process left running by the
@@ -774,6 +775,21 @@ jobs:
           if [ -n "$bad" ]; then
             echo "Static artifact contains a non-regular entry" >&2
             exit 1
+          fi
+          # Freshness check: the workflow group is unique per push run, so two runs can reach the production lock out of order. Only the
+          # run whose commit is still the head of the deployed branch may write; an older one must not overwrite a newer deploy. A failed
+          # lookup fails closed. The job token has contents: read and lives only in this step's env.
+          head=$(curl -fsS --retry 3 --max-time 30 \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -H "Accept: application/vnd.github.sha" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/commits/${GITHUB_REF_NAME}") || exit 1
+          case "$head" in
+            "" | *[!0-9a-f]*) echo "Could not read the branch head" >&2; exit 1 ;;
+          esac
+          [ "${#head}" -eq 40 ] || { echo "Could not read the branch head" >&2; exit 1; }
+          if [ "$head" != "$GITHUB_SHA" ]; then
+            echo "Superseded by ${head}, skipping stale deploy of ${GITHUB_SHA}"
+            exit 0
           fi
           gcloud storage rsync --recursive --ignore-symlinks --checksums-only --delete-unmatched-destination-objects \
             ./dist "gs://${GCS_BUCKET}/${WEBSITE}/"

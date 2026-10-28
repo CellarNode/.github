@@ -68,6 +68,13 @@ def failures_for(workflow)
     out << "discord-deploy: must declare permissions without id-token (got #{notify['permissions'].inspect})" unless notify["permissions"].is_a?(Hash) && !notify["permissions"].key?("id-token") && notify["permissions"].values.none? { |level| level == "write" }
     out << "discord-deploy: must not have steps that run build code" if notify.key?("steps")
   end
+  # Rule 4: the stale-deploy freshness check sits before the rsync and fails closed
+  deploy_run = (jobs.fetch("deploy-production").fetch("steps").find { |step| step.fetch("name", "") == "Deploy to production" } || {}).fetch("run", "")
+  fresh = deploy_run.index("commits/${GITHUB_REF_NAME}")
+  rsync = deploy_run.index("gcloud storage rsync")
+  out << "deploy-production: the freshness check (branch head lookup) must come before the rsync" unless fresh && rsync && fresh < rsync
+  out << "deploy-production: the freshness check must fail closed when the lookup fails" unless deploy_run.match?(/commits\/\$\{GITHUB_REF_NAME\}"\) \|\| exit 1/)
+  out << "deploy-production: a superseded run must skip the deploy and exit 0" unless deploy_run.match?(/if \[ "\$head" != "\$GITHUB_SHA" \]; then\n[^\n]*[Ss]uperseded[^\n]*\n\s*exit 0/)
   webhook_hit = lambda do |value|
     case value
     when Hash then value.any? { |key, inner| webhook_hit.call(key) || webhook_hit.call(inner) }
@@ -137,6 +144,10 @@ mutations = {
   "discord-deploy gains id-token" => ->(wf) { wf["jobs"]["discord-deploy"]["permissions"]["id-token"] = "write" },
   "discord-deploy is removed" => ->(wf) { wf["jobs"].delete("discord-deploy") },
   "the webhook secret returns to deploy-production" => ->(wf) { (step.call(wf, "deploy-production", "Lint")["env"] ||= {})["WEBHOOK_URL"] = "${{ secrets.DISCORD_WEBHOOK_URL }}" },
+  "the freshness check is removed" => ->(wf) { s = step.call(wf, "deploy-production", "Deploy to production"); s["run"] = s["run"].sub(/head=\$\(curl.*?\nfi\n/m, "") },
+  "the freshness check moves after the rsync" => ->(wf) { s = step.call(wf, "deploy-production", "Deploy to production"); s["run"] = "#{s['run']}\n# commits/${GITHUB_REF_NAME}\n"; s["run"] = s["run"].sub("commits/${GITHUB_REF_NAME}\")", "x\")") },
+  "the freshness lookup no longer fails closed" => ->(wf) { s = step.call(wf, "deploy-production", "Deploy to production"); s["run"] = s["run"].sub('commits/${GITHUB_REF_NAME}") || exit 1', 'commits/${GITHUB_REF_NAME}") || true') },
+  "a stale run no longer exits 0" => ->(wf) { s = step.call(wf, "deploy-production", "Deploy to production"); s["run"] = s["run"].sub("skipping stale deploy of ${GITHUB_SHA}\"\n  exit 0", "skipping stale deploy of ${GITHUB_SHA}\"\n  exit 1") },
   "the production install drops --ignore-scripts" => ->(wf) { s = step.call(wf, "deploy-production", "Install dependencies"); s["run"] = s["run"].gsub("--ignore-scripts", "") },
   "npm ci in a new production step" => ->(wf) { wf["jobs"]["deploy-production"]["steps"].insert(8, { "name" => "More deps", "run" => with_unset.call("npm ci") }) },
   "the unset is removed from Lint" => ->(wf) { strip_unset.call(wf, "Lint") },
