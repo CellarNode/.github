@@ -1,0 +1,31 @@
+.github/tests/deploy-static-job-boundaries.test.rb
+  s_75d2cd8babd975::t_2c583e177f59c0 332-333,335-338,383,387,390-397,465,468,532-540
+.github/tests/deploy-static-token-job.test.rb
+  s_b9246d0625a629::t_0653a18b1a64c2 4-9,14-16,28-39,45,47-48,50,54-75,78,127-139
+.github/workflows/deploy-static-website.yaml
+  s_b9246d0625a629::t_594418c9dd27a7 59,547-548,564-572,583-587,594-600,619,621,718-719,773-774,803-804,1015-1031
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "335e1dcf4bd76b81d90dd4d0ed99400f8dd0bbc7",
+  "prompts": {},
+  "sessions": {
+    "s_75d2cd8babd975": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a17dd9-7b38-7c70-ad5e-e4299f7889a7",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "mjnong <marcusnagy@icloud.com>"
+    },
+    "s_b9246d0625a629": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "eef2a70e-802f-4097-87fc-4092e46df79a",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "mjnong <marcusnagy@icloud.com>"
+    }
+  }
+}
