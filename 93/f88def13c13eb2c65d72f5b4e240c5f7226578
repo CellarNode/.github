@@ -1,0 +1,38 @@
+.github/workflows/i18n-pipeline.yaml
+  s_2be9db9895ab2c::t_6ae1ad65e63897 268,273-304,484,487-488
+  s_2be9db9895ab2c::t_0a2d379da20706 459-460
+  s_2be9db9895ab2c::t_f036745786b038 228-267,269-272,305,322,326-449,451-455,463-472,474-483,485-486,489-498
+  s_2be9db9895ab2c::t_b84051547364b5 450,456-458,461-462,473
+.github/tests/i18n-pipeline-translation-cache.test.rb
+  s_2be9db9895ab2c::t_7fc1e6c969cc6a 365
+  s_2be9db9895ab2c::t_5ce1cee37efc35 23,136
+  s_2be9db9895ab2c::t_86e2f22993e44c 247-251
+  s_2be9db9895ab2c::t_a19c4c1c6f198e 263-265,270
+  s_2be9db9895ab2c::t_9f1966c9058279 80-83,139-140
+  s_2be9db9895ab2c::t_abf7641f15a7d6 301-313
+  s_2be9db9895ab2c::t_84a07e9cfbf0bc 320-323,334
+  s_2be9db9895ab2c::t_554eb7224d2325 1,3,26-29,32-45,47-48,57-79,84-87,90-101,115-119,124-125,127,129,134,138,152,156-157,161-166,169-200,206-225,234-237,240-243,245-246,252-262,266-269,271-284,314-319,335-341,358-364,366,369
+  s_2be9db9895ab2c::t_a09f1688d661cf 46,49-56
+  s_2be9db9895ab2c::t_dafff41ae0604f 285-300,324-333,342-357,367
+  s_2be9db9895ab2c::t_82d4983c79dd58 167-168,202-205,226-233
+  s_2be9db9895ab2c::t_3dad03430e4971 201,244
+  s_2be9db9895ab2c::t_4c4bbc72edbeec 30-31
+  s_2be9db9895ab2c::t_611f02b1991505 2,13
+  s_2be9db9895ab2c::t_d25850cf232de6 238-239
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "93f88def13c13eb2c65d72f5b4e240c5f7226578",
+  "prompts": {},
+  "sessions": {
+    "s_2be9db9895ab2c": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a16c4b-5b6e-7362-abe6-04b5b035532d",
+        "model": "gpt-6-luna"
+      },
+      "human_author": "github-actions[bot] <github-actions[bot]@users.noreply.github.com>"
+    }
+  }
+}

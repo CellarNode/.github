@@ -1,0 +1,19 @@
+.github/tests/i18n-pipeline-translation-cache.test.rb
+  s_2be9db9895ab2c::t_9a068013baeaed 76-84,90-92
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "562baa6157a038a7e57ea9b159794083ce1ace97",
+  "prompts": {},
+  "sessions": {
+    "s_2be9db9895ab2c": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a16c4b-5b6e-7362-abe6-04b5b035532d",
+        "model": "gpt-6-luna"
+      },
+      "human_author": "github-actions[bot] <github-actions[bot]@users.noreply.github.com>"
+    }
+  }
+}

@@ -1,0 +1,31 @@
+.github/workflows/deploy-backend.yaml
+  s_aea13dd997c75d::t_40db78b6793b66 73-74,237-242,246,248-452,595-598,600-610
+  s_aea13dd997c75d::t_e3d61113d9c3c3 243-245,247,599,611
+.github/tests/discord-deploy-in-job.test.rb
+  s_aea13dd997c75d::t_03b638e4662138 24
+  s_aea13dd997c75d::t_0ba54f1206f30f 37,43-44,116
+  s_aea13dd997c75d::t_b298217465c869 1-23,25-34,36,38,41,45,47-52,54-115,117-264,269,271-287,294-325
+  s_aea13dd997c75d::t_618422b229f45d 35,46
+  s_aea13dd997c75d::t_694d69b5a93364 39-40,288-293
+  s_aea13dd997c75d::t_ded22d436f7178 42,53,265-268,270
+.github/workflows/validate-backend-deploy.yaml
+  s_aea13dd997c75d::t_92518d7a5383c6 9,20,66-78
+.github/tests/deploy-gate-contract.test.rb
+  s_aea13dd997c75d::t_a12846d73ae652 17-20,105-107,168-174,184-187
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "a6b8320550513d7a30bbd5430d914f070d0c5245",
+  "prompts": {},
+  "sessions": {
+    "s_aea13dd997c75d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e0797d06-4a6f-471f-9ab1-dc75510dd757",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "github-actions[bot] <github-actions[bot]@users.noreply.github.com>"
+    }
+  }
+}

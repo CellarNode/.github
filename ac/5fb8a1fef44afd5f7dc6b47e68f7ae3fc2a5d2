@@ -1,0 +1,29 @@
+.github/workflows/deploy-static-website.yaml
+  s_aea13dd997c75d::t_095a398aee701a 786-1000
+.github/workflows/validate-static-deploy.yaml
+  s_aea13dd997c75d::t_aa0099f66efefc 9-10,21-22,49-50
+  s_aea13dd997c75d::t_a9bd464eb26c26 51
+.github/tests/deploy-static-discord-in-job.test.rb
+  s_aea13dd997c75d::t_72a625e3b72957 1-169
+.github/tests/deploy-static-job-boundaries.test.rb
+  s_aea13dd997c75d::t_0e148b170a4d96 332-341
+  s_aea13dd997c75d::t_180c7df0eb6c3f 536-539
+.github/tests/support/discord_inline_script.rb
+  s_aea13dd997c75d::t_17d004d99bbe09 1-128
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "ac5fb8a1fef44afd5f7dc6b47e68f7ae3fc2a5d2",
+  "prompts": {},
+  "sessions": {
+    "s_aea13dd997c75d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e0797d06-4a6f-471f-9ab1-dc75510dd757",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "github-actions[bot] <github-actions[bot]@users.noreply.github.com>"
+    }
+  }
+}
