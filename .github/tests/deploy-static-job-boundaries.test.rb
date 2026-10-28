@@ -332,7 +332,12 @@ abort "Workflow-level permissions must not grant write access (got #{workflow_pe
 # CEL-2795: the Discord webhook never reaches the job that runs build code and holds id-token. The deploy notification is a separate
 # `discord-deploy` job that calls the reusable notifier. No step of deploy-production may read a secret or the job token.
 secret_pattern = /secrets\.|github\.token|GITHUB_TOKEN/
-abort "Production job must not read a repository secret or the job token (the webhook belongs to discord-deploy)" if deep_string_values(deploy_production).any? { |value| value.match?(secret_pattern) }
+# One exception: the final "Warn when a newer commit is not deployed" step reads the job token (contents: read) so `git ls-remote` can see the
+# private repository. It runs after the deploy and all build code, passes the token only into git, and may not appear anywhere else.
+newer_step = deploy_production.fetch("steps").find { |step| step.fetch("name", "") == "Warn when a newer commit is not deployed" }
+abort "The newer-commit step must be the last step and read github.token only through GH_TOKEN" unless newer_step && deploy_production.fetch("steps").last.equal?(newer_step) && newer_step.fetch("env", {})["GH_TOKEN"] == "${{ github.token }}" && deep_string_values(newer_step.fetch("run")).none? { |value| value.match?(secret_pattern) }
+production_without_newer = deploy_production.merge("steps" => deploy_production.fetch("steps").reject { |step| step.equal?(newer_step) }, "outputs" => {})
+abort "Production job must not read a repository secret or the job token (the webhook belongs to discord-deploy; only the newer-commit step reads the token)" if deep_string_values(production_without_newer).any? { |value| value.match?(secret_pattern) }
 abort "Production job must not mention DISCORD_WEBHOOK_URL anywhere" if deep_string_values(deploy_production).any? { |value| value.include?("DISCORD_WEBHOOK_URL") }
 abort "Production job must carry its own non-cancelling lock" unless deploy_production["concurrency"] == { "group" => "static-deploy-prod-${{ inputs.website_slug }}", "cancel-in-progress" => false }
 abort "The workflow-level group must be unique per push run (run_id), so no notify job holds a deploy lock" unless workflow.fetch("concurrency").fetch("group") == "static-deploy-${{ inputs.website_slug }}-${{ github.event.pull_request.number || github.run_id }}"
@@ -435,16 +440,22 @@ end
 
 bucket = workflow.fetch("env").fetch("GCS_BUCKET")
 site_prefix = /\Ags:\/\/\$\{GCS_BUCKET\}\/\$\{WEBSITE\}\/\z/
-deploy_runs = deploy_steps.map { |step| [step.fetch("name", step.fetch("uses", "")), step.fetch("run", "").lines.reject { |line| line.lstrip.start_with?("#") }.join] }.reject { |_name, run| run.empty? }
+# The one `recovery=` assignment is an operator-facing message that names `gcloud storage rm`; it is checked on its own below and never executed.
+RECOVERY_LINE = 'recovery="Operator recovery: gcloud storage rm ${marker} (see the runbook section \'Deploy marker\' in ci-identities.md)"'.freeze
+deploy_runs = deploy_steps.map { |step| [step.fetch("name", step.fetch("uses", "")), step.fetch("run", "").lines.reject { |line| line.lstrip.start_with?("#") || line.strip == RECOVERY_LINE }.join] }.reject { |_name, run| run.empty? }
+abort "The deploy step must carry the recovery message exactly once" unless deploy_steps.fetch(publish_index).fetch("run").lines.count { |line| line.strip == RECOVERY_LINE } == 1
 production_gcloud_calls = deploy_runs.flat_map { |_name, run| run.scan(/(?<![\w-])gcloud\s+(?!warm-up)(?:\S+)\s+(?:\S+)/) }
-abort "Production path must run gcloud storage ls and rsync, got #{production_gcloud_calls.inspect}" unless production_gcloud_calls.length == 4
+abort "Production path must run gcloud storage ls, cat, cp and rsync once each, got #{production_gcloud_calls.inspect}" unless production_gcloud_calls.length == 4
 abort "Production path may only run gcloud storage ls, cat, rsync and the marker cp" unless production_gcloud_calls.map { |call| call.split.values_at(1, 2).join(" ") }.sort == ["storage cat", "storage cp", "storage ls", "storage rsync"]
 abort "Production path must not use gsutil or gcloud storage rm/mv/buckets" if deploy_runs.any? { |_name, run| run.match?(/gsutil|gcloud storage (?:rm|mv|buckets|objects)/) }
-abort "The only gcloud storage cp must write the .deploy/sha marker from stdin" unless deploy_runs.flat_map { |_name, run| run.scan(/gcloud storage cp[^\n]*/) } == ['gcloud storage cp --cache-control=no-store - "gs://${GCS_BUCKET}/${WEBSITE}/.deploy/sha"']
+abort "The only gcloud storage cp must write the .deploy/sha marker from stdin" unless deploy_runs.flat_map { |_name, run| run.scan(/gcloud storage cp[^\n]*/) } == ['gcloud storage cp --cache-control=no-store - "$marker"; }']
+abort "The marker variable must be exactly the site's .deploy/sha object" unless deploy_runs.flat_map { |_name, run| run.scan(/^\s*marker=.*$/) }.map(&:strip) == ['marker="gs://${GCS_BUCKET}/${WEBSITE}/.deploy/sha"']
 bucket_urls = deploy_runs.flat_map { |_name, run| run.scan(%r{gs://[^\s"']*}) }
 abort "Production path must reference the bucket by URL" if bucket_urls.empty?
 marker_url = "gs://${GCS_BUCKET}/${WEBSITE}/.deploy/sha"
 abort "Production gcloud targets must be exactly gs://${GCS_BUCKET}/${WEBSITE}/ (or its .deploy/sha marker), got #{bucket_urls.reject { |url| url.match?(site_prefix) || url == marker_url }.inspect}" unless bucket_urls.all? { |url| url.match?(site_prefix) || url == marker_url }
+abort "Production workflow comments must not claim deploys of one site 'still queue, never cancel'" if File.read(workflow_path).include?("queue, never cancel")
+abort "Production workflow must explain the one-pending-job concurrency semantics" unless File.read(workflow_path).include?("at most ONE pending job per concurrency group")
 abort "Production path must not hard-code a bucket or prefix" if deploy_runs.any? { |_name, run| run.include?(bucket) || run.include?("preview/") }
 
 # Parallel composite uploads write temporary objects outside the site prefix, so they must stay off.
@@ -483,6 +494,7 @@ Dir.mktmpdir do |directory|
   # A gcloud stub for the Deploy step: `storage cat` returns the live marker (or fails), `storage cp -` records the marker written,
   # `storage rsync` can be made to fail; every call is logged.
   marker_out = File.join(directory, "marker-written")
+  step_output = File.join(directory, "github-output")
   deploy_gcloud = <<~SH
     #!/bin/sh
     printf '%s\\n' "$*" >> "$STUB_LOG"
@@ -490,8 +502,17 @@ Dir.mktmpdir do |directory|
       "storage cat")
         if [ "${MARKER_RC:-0}" != 0 ]; then echo "$MARKER_ERR" >&2; exit "$MARKER_RC"; fi
         printf '%s\\n' "$MARKER"; exit 0 ;;
-      "storage cp") cat > "$MARKER_OUT"; exit 0 ;;
-      "storage rsync") exit "${RSYNC_RC:-0}" ;;
+      "storage cp")
+        # PRE_CP_FAIL=1 fails the write before the rsync; POST_CP_FAILS=N fails the first N writes after it.
+        if [ ! -f "$STUB_DIR/rsynced" ]; then
+          if [ "${PRE_CP_FAIL:-0}" = 1 ]; then cat > /dev/null; exit 1; fi
+        else
+          n=$(cat "$STUB_DIR/post-cp-count" 2>/dev/null || echo 0)
+          echo $((n + 1)) > "$STUB_DIR/post-cp-count"
+          if [ "$n" -lt "${POST_CP_FAILS:-0}" ]; then cat > /dev/null; exit 1; fi
+        fi
+        cat > "$MARKER_OUT"; exit 0 ;;
+      "storage rsync") touch "$STUB_DIR/rsynced"; exit "${RSYNC_RC:-0}" ;;
     esac
     exit 0
   SH
@@ -504,6 +525,8 @@ Dir.mktmpdir do |directory|
       "WEBSITE" => "admin.cellarnode.com",
       "GITHUB_SHA" => "a" * 40,
       "MARKER_OUT" => marker_out,
+      "STUB_DIR" => directory,
+      "GITHUB_OUTPUT" => step_output,
     }.merge(extra_env)
     Dir.mkdir(File.join(directory, "dist")) unless Dir.exist?(File.join(directory, "dist"))
     Open3.capture3(env, *runner, step.fetch("run"), chdir: directory)
@@ -541,44 +564,109 @@ Dir.mktmpdir do |directory|
   git.call("checkout", "-q", "-b", "other", c1)
   git.call("commit", "-q", "--allow-empty", "-m", "d1"); d1 = git.call("rev-parse", "HEAD")
   unknown = "c" * 40
-  missing = { "MARKER_RC" => "1", "MARKER_ERR" => "ERROR: (gcloud.storage.cat) No URLs matched: gs://#{bucket}/admin.cellarnode.com/.deploy/sha" }
+  # gcloud's real message for a missing object (not "No URLs matched", not a 404).
+  missing = { "MARKER_RC" => "1", "MARKER_ERR" => "ERROR: (gcloud.storage.cat) The following URLs matched no objects or files:\n-gs://#{bucket}/admin.cellarnode.com/.deploy/sha" }
   deploy = lambda do |sha, extra|
     File.write(File.join(directory, "gcloud"), deploy_gcloud)
     File.chmod(0o755, File.join(directory, "gcloud"))
     File.write(log, "")
-    File.delete(marker_out) if File.exist?(marker_out)
+    [marker_out, File.join(directory, "rsynced"), File.join(directory, "post-cp-count")].each { |path| File.delete(path) if File.exist?(path) }
+    File.write(step_output, "")
     out, err, status = run_step.call("Deploy to production", posix, { "GITHUB_SHA" => sha }.merge(extra))
     [out, err, status, File.read(log).lines.map(&:strip)]
   end
   rsync_pattern = %r{\Astorage rsync .*--delete-unmatched-destination-objects -x \^\\\.deploy/ \./dist gs://#{Regexp.escape(bucket)}/admin\.cellarnode\.com/\z}
+  marker_url = "gs://#{bucket}/admin.cellarnode.com/.deploy/sha"
+  cp_call = "storage cp --cache-control=no-store - #{marker_url}"
+  deployed_output = -> { File.read(step_output) }
+  # Deployed: cat, the intent marker, the rsync, the final marker; deployed=true only at the end.
   assert_deployed = lambda do |label, sha, extra|
     _out, err, status, calls = deploy.call(sha, extra)
     abort "#{label}: the step must succeed: #{err}" unless status.success?
-    abort "#{label}: calls must be cat, rsync (excluding .deploy/), cp, got #{calls.inspect}" unless calls.length == 3 && calls[0] == "storage cat gs://#{bucket}/admin.cellarnode.com/.deploy/sha" && calls[1].match?(rsync_pattern) && calls[2] == "storage cp --cache-control=no-store - gs://#{bucket}/admin.cellarnode.com/.deploy/sha"
+    abort "#{label}: calls must be cat, cp (intent), rsync (excluding .deploy/), cp, got #{calls.inspect}" unless calls.length == 4 && calls[0] == "storage cat #{marker_url}" && calls[1] == cp_call && calls[2].match?(rsync_pattern) && calls[3] == cp_call
     abort "#{label}: the marker written must be the deployed sha" unless File.exist?(marker_out) && File.read(marker_out).strip == sha
+    abort "#{label}: must emit deployed=true, got #{deployed_output.call.inspect}" unless deployed_output.call == "deployed=true\n"
   end
-  assert_not_deployed = lambda do |label, sha, extra|
-    _out, _err, status, calls = deploy.call(sha, extra)
+  assert_not_deployed = lambda do |label, sha, extra, recovery_hint: false|
+    _out, err, status, calls = deploy.call(sha, extra)
     abort "#{label}: the step must fail closed" if status.success?
-    abort "#{label}: nothing may be uploaded, got #{calls.inspect}" unless calls.none? { |call| call.start_with?("storage rsync", "storage cp") }
+    abort "#{label}: nothing may be uploaded or marked, got #{calls.inspect}" unless calls.none? { |call| call.start_with?("storage rsync", "storage cp") }
+    abort "#{label}: must not emit deployed=true" if deployed_output.call.include?("deployed=true")
+    next unless recovery_hint
+
+    abort "#{label}: the error must name the operator recovery, got #{err.inspect}" unless err.include?("gcloud storage rm #{marker_url}") && err.include?("Deploy marker")
   end
 
   assert_deployed.call("no marker (first deploy)", c2, missing)
   assert_deployed.call("equal sha (redeploy)", c2, { "MARKER" => c2 })
   assert_deployed.call("a descendant of the live commit", c2, { "MARKER" => c1 })
   out, err, status, calls = deploy.call(d1, { "MARKER" => c2 })
-  abort "Diverged history must still deploy: #{err}" unless status.success? && calls.length == 3
+  abort "Diverged history must still deploy: #{err}" unless status.success? && calls.length == 4
   abort "Diverged history must warn, got #{out.inspect}" unless out.include?("::warning::live #{c2} and #{d1} have diverged, deploying")
   out, _err, status, calls = deploy.call(c1, { "MARKER" => c2 })
   abort "A stale run (ancestor of the live commit) must exit 0" unless status.success?
   abort "A stale run must emit the warning, got #{out.inspect}" unless out.include?("::warning::stale deploy skipped: #{c1} is an ancestor of live #{c2}")
   abort "A stale run must only read the marker, got #{calls.inspect}" unless calls.length == 1 && calls[0].start_with?("storage cat")
-  assert_not_deployed.call("a marker commit this checkout does not have", c2, { "MARKER" => unknown })
-  assert_not_deployed.call("a marker that is not a sha", c2, { "MARKER" => "not-a-sha" })
+  abort "A stale skip must emit deployed=false and never deployed=true, got #{deployed_output.call.inspect}" unless deployed_output.call == "deployed=false\n"
+  assert_not_deployed.call("a marker commit this checkout does not have", c2, { "MARKER" => unknown }, recovery_hint: true)
+  assert_not_deployed.call("a marker that is not a sha", c2, { "MARKER" => "not-a-sha" }, recovery_hint: true)
   assert_not_deployed.call("an unreadable marker (403)", c2, { "MARKER_RC" => "1", "MARKER_ERR" => "ERROR: (gcloud.storage.cat) HTTPError 403: denied" })
+  assert_not_deployed.call("a 404 is not 'no marker' (only gcloud's matched-no-objects wording is)", c2, { "MARKER_RC" => "1", "MARKER_ERR" => "ERROR: (gcloud.storage.cat) HTTPError 404: Not Found" })
+  assert_not_deployed.call("the old 'No URLs matched' wording is not accepted", c2, { "MARKER_RC" => "1", "MARKER_ERR" => "ERROR: (gcloud.storage.cat) No URLs matched: #{marker_url}" })
+
+  # F3: a failed rsync leaves the INTENT marker (the commit whose files may be live) and posts no deployed.
   _out, _err, status, calls = deploy.call(c2, { "MARKER" => c1, "RSYNC_RC" => "1" })
   abort "A failed rsync must fail the step" if status.success?
-  abort "A failed rsync must not write the marker, got #{calls.inspect}" if calls.any? { |call| call.start_with?("storage cp") }
+  abort "A failed rsync must leave exactly the intent marker write before it, got #{calls.inspect}" unless calls.length == 3 && calls[1] == cp_call && calls[2].start_with?("storage rsync")
+  abort "A failed rsync must leave the intent marker naming the deployed sha" unless File.exist?(marker_out) && File.read(marker_out).strip == c2
+  abort "A failed rsync must not claim deployed, got #{deployed_output.call.inspect}" unless deployed_output.call.empty?
+  # The intent marker keeps an older run out afterwards: the marker now names c2, so a run of c1 is a stale skip.
+  _out, _err, status, calls = deploy.call(c1, { "MARKER" => c2, "RSYNC_RC" => "1" })
+  abort "An older run after a failed newer deploy must still be a stale skip" unless status.success? && calls.length == 1
+  # A failed intent write stops before the rsync.
+  _out, err, status, calls = deploy.call(c2, { "MARKER" => c1, "PRE_CP_FAIL" => "1" })
+  abort "A failed intent write must fail the step before the rsync, got #{calls.inspect}" if status.success? || calls.any? { |call| call.start_with?("storage rsync") }
+  abort "A failed intent write must say nothing was deployed, got #{err.inspect}" unless err.include?("nothing was deployed") && deployed_output.call.empty?
+  # The post-rsync write is retried 3 times: two failures still succeed, three fail the step and post no deployed.
+  _out, err, status, calls = deploy.call(c2, { "MARKER" => c1, "POST_CP_FAILS" => "2" })
+  abort "Two failed marker writes after the rsync must be retried to success: #{err}" unless status.success? && calls.count { |call| call == cp_call } == 4 && deployed_output.call == "deployed=true\n"
+  _out, err, status, calls = deploy.call(c2, { "MARKER" => c1, "POST_CP_FAILS" => "3" })
+  abort "Three failed marker writes after the rsync must fail the step" if status.success?
+  abort "The post-rsync marker write must be attempted exactly 3 times (plus the intent write), got #{calls.inspect}" unless calls.count { |call| call == cp_call } == 4
+  abort "A step whose final marker write failed must not claim deployed, got #{deployed_output.call.inspect}" unless deployed_output.call.empty?
+
+  # F1: the newer-commit warning runs against a real remote. origin/main is c2 (the deployed commit) unless a case moves it.
+  remote = File.join(directory, "remote.git")
+  Open3.capture3("git", "init", "-q", "--bare", remote)
+  git.call("remote", "add", "origin", remote)
+  git.call("push", "-q", "origin", "#{c2}:refs/heads/main")
+  newer_step = deploy_steps.fetch(step_index.call("Warn when a newer commit is not deployed"))
+  run_newer = lambda do |sha, extra = {}|
+    File.write(step_output, "")
+    env = { "PATH" => ENV.fetch("PATH"), "GITHUB_SHA" => sha, "GITHUB_REF_NAME" => "main", "GITHUB_OUTPUT" => step_output, "GH_TOKEN" => "dummy-token", "CLOUDSDK_CONFIG" => directory }.merge(extra)
+    Open3.capture3(env, "bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", newer_step.fetch("run"), chdir: directory)
+  end
+  out, err, status = run_newer.call(c2)
+  abort "No newer commit: the step must succeed quietly: #{err}" unless status.success? && !out.include?("::warning::") && File.read(step_output).empty?
+  # Push c3 (a descendant of c2) to main from a scratch clone.
+  clone = File.join(directory, "clone")
+  Open3.capture3("git", "clone", "-q", remote, clone)
+  Open3.capture3("git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "c3", chdir: clone)
+  c3, = Open3.capture3("git", "rev-parse", "HEAD", chdir: clone)
+  c3 = c3.strip
+  Open3.capture3("git", "push", "-q", "origin", "HEAD:refs/heads/main", chdir: clone)
+  out, err, status = run_newer.call(c2)
+  abort "A newer descendant on main: the step must still succeed: #{err}" unless status.success?
+  abort "A newer descendant on main must warn, got #{out.inspect}" unless out.include?("::warning::newer commit #{c3} on main is not deployed; re-run its production run")
+  abort "A newer descendant on main must export newer_head, got #{File.read(step_output).inspect}" unless File.read(step_output) == "newer_head=#{c3}\n"
+  # A head that is NOT a descendant of the deployed commit (diverged) is not a missed deploy of newer work.
+  out, err, status = run_newer.call(d1)
+  abort "A diverged head must not warn about a newer commit, got #{out.inspect} #{err.inspect}" unless status.success? && !out.include?("newer commit") && File.read(step_output).empty?
+  # A lookup failure warns and never fails the (already successful) deploy.
+  out, _err, status = run_newer.call(c2, "GITHUB_REF_NAME" => "no-such-branch")
+  abort "A failed lookup must not fail the deploy" unless status.success?
+  abort "A failed lookup must warn, got #{out.inspect}" unless out.include?("::warning::could not look up the head of no-such-branch")
+  abort "A failed lookup must not export newer_head" unless File.read(step_output).empty?
 end
 
 # Previews are untouched by CEL-2768: they keep the artifact hand-off and their existing identity.
@@ -598,7 +686,84 @@ abort "discord-deploy must need deploy-production" unless discord_deploy["needs"
 abort "discord-deploy must run on !cancelled()" unless discord_deploy["if"].to_s.include?("!cancelled()") && !discord_deploy["if"].to_s.include?("always()")
 abort "discord-deploy must not hold id-token (got #{discord_deploy['permissions'].inspect})" unless discord_deploy["permissions"] == { "contents" => "read", "pull-requests" => "read" }
 abort "discord-deploy must call discord-notify.yaml with the deploy event" unless discord_deploy["uses"] == "./.github/workflows/discord-notify.yaml" && discord_deploy.dig("with", "event") == "deploy"
-abort "discord-deploy must report deploy-production's result" unless discord_deploy.dig("with", "status") == "${{ needs.deploy-production.result }}"
+
+# F2: evaluate the real discord-deploy expressions over the outcome matrix. Only a real deploy may say "Deployed to production".
+def evaluate_notice_expression(expression, result:, deployed:, newer_head:)
+  source = expression.strip.sub(/\A\$\{\{/, "").sub(/\}\}\z/, "").gsub(/\s+/, " ").strip
+  tokens = source.scan(/'(?:[^']|'')*'|&&|\|\||==|!=|[(),]|[A-Za-z_][\w.-]*/)
+  abort "Unsupported discord-deploy expression: #{source}" unless source.gsub(/'(?:[^']|'')*'|&&|\|\||==|!=|[(),]|[A-Za-z_][\w.-]*|\s+/, "").empty?
+  vars = { "needs.deploy-production.result" => result, "needs.deploy-production.outputs.deployed" => deployed, "needs.deploy-production.outputs.newer_head" => newer_head }
+  position = 0
+  truthy = ->(value) { !(value.nil? || value == "" || value == false) }
+  peek = -> { tokens[position] }
+  take = -> { tokens[position].tap { position += 1 } }
+  parse_or = nil
+  parse_primary = lambda do
+    token = take.call
+    if token == "("
+      value = parse_or.call
+      abort "expected )" unless take.call == ")"
+      value
+    elsif token == "format"
+      take.call
+      args = [parse_or.call]
+      args << parse_or.call while peek.call == "," && take.call
+      abort "expected )" unless take.call == ")"
+      args.first.gsub(/\{(\d)\}/) { args[Regexp.last_match(1).to_i + 1].to_s }
+    elsif token.start_with?("'")
+      token[1..-2].gsub("''", "'")
+    else
+      vars.fetch(token) { abort "Unknown variable in discord-deploy expression: #{token}" }
+    end
+  end
+  parse_equality = lambda do
+    left = parse_primary.call
+    if ["==", "!="].include?(peek.call)
+      operator = take.call
+      right = parse_primary.call
+      return operator == "==" ? left == right : left != right
+    end
+    left
+  end
+  parse_and = lambda do
+    value = parse_equality.call
+    while peek.call == "&&"
+      take.call
+      right = parse_equality.call
+      value = truthy.call(value) ? right : value
+    end
+    value
+  end
+  parse_or = lambda do
+    value = parse_and.call
+    while peek.call == "||"
+      take.call
+      right = parse_and.call
+      value = truthy.call(value) ? value : right
+    end
+    value
+  end
+  parse_or.call.tap { abort "Trailing tokens in discord-deploy expression: #{tokens[position..].inspect}" if position < tokens.length }
+end
+notice = ->(result, deployed, newer_head = "") do
+  %w[status deploy_title deploy_note].to_h { |key| [key, evaluate_notice_expression(discord_deploy.dig("with", key).to_s, result: result, deployed: deployed, newer_head: newer_head)] }
+end
+real = notice.call("success", "true")
+abort "A real deploy must say Deployed to production with status success, got #{real.inspect}" unless real == { "status" => "success", "deploy_title" => "Deployed to production", "deploy_note" => "" }
+warned = notice.call("success", "true", c3_placeholder = "b" * 40)
+abort "A real deploy with a newer head must carry the newer-head warning, got #{warned.inspect}" unless warned["deploy_title"] == "Deployed to production" && warned["deploy_note"].include?(c3_placeholder) && warned["deploy_note"].include?("Re-run its production run")
+stale = notice.call("success", "false")
+abort "A stale skip must not say Deployed, got #{stale.inspect}" if stale["deploy_title"].start_with?("Deployed") || stale["status"] == "success" || !stale["deploy_title"].include?("stale run skipped")
+abort "An unset deployed output on a successful job must not say Deployed, got #{notice.call('success', '').inspect}" if notice.call("success", "")["deploy_title"].start_with?("Deployed")
+cancelled = notice.call("cancelled", "")
+abort "A cancelled deploy must say not deployed and to re-run the newest main run, got #{cancelled.inspect}" unless cancelled["status"] == "cancelled" && cancelled["deploy_title"] == "Not deployed: the production deploy was cancelled, re-run the newest main run"
+skipped = notice.call("skipped", "")
+abort "A skipped deploy must say not deployed, got #{skipped.inspect}" unless skipped["status"] == "skipped" && skipped["deploy_title"] == "Not deployed: the production deploy was skipped"
+failed = notice.call("failure", "")
+abort "A failed deploy must say it failed, not Deployed, got #{failed.inspect}" unless failed["status"] == "failure" && failed["deploy_title"] == "Production deploy failed"
+titles = [real, stale, cancelled, skipped, failed].map { |entry| entry["deploy_title"] }
+abort "Each outcome needs its own message, got #{titles.inspect}" unless titles.uniq.length == titles.length
+
 
 {
   "deploy-production" => "Deploy to production",

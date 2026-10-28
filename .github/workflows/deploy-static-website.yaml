@@ -581,10 +581,19 @@ jobs:
       needs.preview-policy.outputs.toolchain_allowed == 'true'
     runs-on: self-hosted-k8s
     # The production lock is on this job, not the workflow: a push run's workflow group is unique per run (run_id), so the notification job
-    # below never holds a lock that the next deploy of the same site would have to wait for. Deploys of one site still queue, never cancel.
+    # below never holds a lock that the next deploy of the same site would have to wait for. cancel-in-progress: false only protects the RUNNING
+    # deploy. GitHub keeps at most ONE pending job per concurrency group and cancels an older pending job when a newer one queues, and ARC does
+    # not start jobs in FIFO order, so an older run A can become pending after a newer run B and cancel B. The .deploy/sha marker stops the site
+    # going backwards, but it cannot guarantee that the newest commit deploys. The "Warn when a newer commit is not deployed" step and the
+    # Discord notice report that case, and the fix is to re-run the production run of the newest main commit.
     concurrency:
       group: static-deploy-prod-${{ inputs.website_slug }}
       cancel-in-progress: false
+    outputs:
+      # 'true' only when the rsync and the final marker write both succeeded. 'false' for a stale skip. Empty when the step failed or never ran.
+      deployed: ${{ steps.deploy.outputs.deployed }}
+      # The newer commit on main that is not deployed, or empty.
+      newer_head: ${{ steps.newer.outputs.newer_head }}
     container:
       image: europe-north1-docker.pkg.dev/festive-terrain-478011-h0/beveriq/ci-runner@sha256:b8ae250c5d7fae79dbbea1f62ca7613ecabd6f3efbd13b533cbdecb293cdf814
     permissions:
@@ -640,9 +649,10 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
-          # Full history: the stale-deploy guard in "Deploy to production" needs the merge-base of this commit and the live one. The extra
-          # fetch time and disk are the cost of never deploying an older commit over a newer one.
+          # Full commit history: the stale-deploy guard in "Deploy to production" needs the merge-base of this commit and the live one.
+          # filter: blob:none omits file contents for older commits, which the guard never reads, so the cost stays small.
           fetch-depth: 0
+          filter: blob:none
 
       - name: Validate production dependency inputs
         shell: bash
@@ -760,6 +770,7 @@ jobs:
           exit 1
 
       - name: Deploy to production
+        id: deploy
         env:
           CLOUDSDK_CONFIG: ${{ runner.temp }}/gcloud
           CLOUDSDK_STORAGE_PROCESS_COUNT: '1'
@@ -779,38 +790,88 @@ jobs:
             exit 1
           fi
           # Stale-deploy guard. The workflow group is unique per push run, so two runs can reach the production lock out of order. The
-          # site records the commit it last deployed in .deploy/sha (written after every successful rsync). A run whose commit is a strict
-          # ANCESTOR of the live one is stale and skips; a missing marker, an equal sha (redeploy), a descendant or diverged history all
-          # deploy. This never skips a change that no newer run deployed. If the marker names a commit this checkout does not have, or the
-          # marker cannot be read for any other reason, the step fails closed. The checkout uses fetch-depth: 0 for the ancestry check.
+          # site records the commit it is deploying (or last deployed) in .deploy/sha. A run whose commit is a strict ANCESTOR of the
+          # recorded one is stale and skips; a missing marker, an equal sha (redeploy), a descendant or diverged history all deploy. This
+          # never skips a change that no newer run deployed. If the marker is malformed, names a commit this checkout does not have, or
+          # cannot be read for any other reason, the step fails closed. The checkout is fetch-depth: 0 for the ancestry check.
+          marker="gs://${GCS_BUCKET}/${WEBSITE}/.deploy/sha"
+          recovery="Operator recovery: gcloud storage rm ${marker} (see the runbook section 'Deploy marker' in ci-identities.md)"
           err=$(mktemp)
-          if last=$(gcloud storage cat "gs://${GCS_BUCKET}/${WEBSITE}/.deploy/sha" 2>"$err"); then
+          if last=$(gcloud storage cat "$marker" 2>"$err"); then
             last=$(printf '%s' "$last" | tr -d '[:space:]')
             case "$last" in
-              "" | *[!0-9a-f]*) echo "Live marker is not a commit sha: ${last}" >&2; exit 1 ;;
+              "" | *[!0-9a-f]*) echo "Live marker is not a commit sha: ${last}. ${recovery}" >&2; exit 1 ;;
             esac
-            [ "${#last}" -eq 40 ] || { echo "Live marker is not a commit sha: ${last}" >&2; exit 1; }
-            git cat-file -e "${last}^{commit}" 2>/dev/null || { echo "Live commit ${last} is not in this checkout, refusing to deploy" >&2; exit 1; }
+            [ "${#last}" -eq 40 ] || { echo "Live marker is not a commit sha: ${last}. ${recovery}" >&2; exit 1; }
+            git cat-file -e "${last}^{commit}" 2>/dev/null || { echo "Live commit ${last} is not in this checkout, refusing to deploy. ${recovery}" >&2; exit 1; }
             if [ "$last" != "$GITHUB_SHA" ]; then
               if git merge-base --is-ancestor "$GITHUB_SHA" "$last"; then
                 echo "::warning::stale deploy skipped: ${GITHUB_SHA} is an ancestor of live ${last}"
+                echo "deployed=false" >> "$GITHUB_OUTPUT"
                 exit 0
               fi
               git merge-base --is-ancestor "$last" "$GITHUB_SHA" || echo "::warning::live ${last} and ${GITHUB_SHA} have diverged, deploying"
             fi
           else
             case "$(cat "$err")" in
-              *"No URLs matched"* | *"matched no objects"* | *404*) ;;
+              *"matched no objects"*) ;;
               *) cat "$err" >&2; echo "Could not read the live deploy marker" >&2; exit 1 ;;
             esac
           fi
           rm -f "$err"
-          # .deploy/ is excluded so --delete-unmatched never removes the marker.
+          # The bucket is publicly readable, so the marker exposes the deployed commit sha, which is acceptable (the source is the same sha
+          # the site was built from). Cache-Control: no-store keeps it from being cached.
+          write_marker() { printf '%s\n' "$GITHUB_SHA" | gcloud storage cp --cache-control=no-store - "$marker"; }
+          # Write the marker BEFORE the rsync as an intent record, and again after it succeeds. The job lock means nothing else deploys
+          # this site meanwhile, and the marker then names the commit whose files may be live from the first byte the rsync writes:
+          #  - rsync fails or the runner dies midway: the site is a mix that includes this commit, and the marker already says so. An
+          #    older run skips (correct: it must not overwrite this), the same commit redeploys (equal sha), a newer one deploys.
+          #  - the write after the rsync fails: the marker is already right, so only the retries below were lost.
+          #  - without the early write, a failure between the rsync and the final write would leave the marker at an older commit and
+          #    let an even older run deploy over the newer files.
+          write_marker || { echo "Could not write the deploy marker before the rsync, nothing was deployed" >&2; exit 1; }
+          # .deploy/ is excluded so --delete-unmatched-destination-objects should never remove the marker. How that exclusion applies to
+          # DESTINATION objects is unverified for gcloud storage rsync, and the canary recipe in the runbook checks it. A deletion would be
+          # harmless: the marker was written before this rsync, is written again after it, and the job lock stops any other deploy
+          # reading the gap.
           gcloud storage rsync --recursive --ignore-symlinks --checksums-only --delete-unmatched-destination-objects -x '^\.deploy/' \
             ./dist "gs://${GCS_BUCKET}/${WEBSITE}/"
-          # Record what is live. The bucket is publicly readable, so this exposes the deployed commit sha, which is acceptable (the source
-          # is the same sha the site was built from); Cache-Control: no-store keeps it from being cached.
-          printf '%s\n' "$GITHUB_SHA" | gcloud storage cp --cache-control=no-store - "gs://${GCS_BUCKET}/${WEBSITE}/.deploy/sha"
+          written=0
+          for i in 1 2 3; do
+            if write_marker; then written=1; break; fi
+            echo "deploy marker write attempt ${i}/3 failed; retrying in $((i * 5))s" >&2
+            sleep $((i * 5))
+          done
+          [ "$written" = 1 ] || { echo "Could not write the deploy marker after the rsync" >&2; exit 1; }
+          echo "deployed=true" >> "$GITHUB_OUTPUT"
+
+      # Liveness check, run only after a real deploy. It warns and never fails: the deploy above has already succeeded, so a lookup
+      # failure here must not turn it red. github.token reaches this step only after all build code has run, and only into git.
+      - name: Warn when a newer commit is not deployed
+        id: newer
+        if: ${{ steps.deploy.outputs.deployed == 'true' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CLOUDSDK_CONFIG: ${{ runner.temp }}/gcloud
+        run: |
+          unset ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_ID_TOKEN_REQUEST_TOKEN
+          set -uo pipefail
+          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
+          export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="http.https://github.com/.extraheader" GIT_CONFIG_VALUE_0="AUTHORIZATION: basic ${auth}"
+          if ! head=$(git ls-remote origin "refs/heads/${GITHUB_REF_NAME}" | cut -f1) || [ -z "$head" ]; then
+            echo "::warning::could not look up the head of ${GITHUB_REF_NAME}; check manually that the newest commit is deployed"
+            exit 0
+          fi
+          [ "$head" = "$GITHUB_SHA" ] && exit 0
+          if ! git fetch --quiet --no-tags --filter=blob:none origin "$head" 2>/dev/null; then
+            echo "::warning::could not fetch ${head} to compare it with ${GITHUB_SHA}; check manually that the newest commit is deployed"
+            exit 0
+          fi
+          if git merge-base --is-ancestor "$GITHUB_SHA" "$head"; then
+            echo "::warning::newer commit ${head} on main is not deployed; re-run its production run"
+            echo "newer_head=${head}" >> "$GITHUB_OUTPUT"
+          fi
 
   deploy-preview:
     needs: [preview-policy, build-preview]
@@ -1061,5 +1122,13 @@ jobs:
       DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
     with:
       event: deploy
-      status: ${{ needs.deploy-production.result }}
+      # Only 'deployed == true' may say "Deployed to production". A stale skip, a skipped job and a cancelled job each get their own wording,
+      # and a cancelled job (typically displaced by a newer pending run) tells the reader to re-run the newest main run.
+      status: ${{ needs.deploy-production.result == 'success' && (needs.deploy-production.outputs.deployed == 'true' && 'success' || 'skipped') || needs.deploy-production.result }}
+      deploy_title: >-
+        ${{ needs.deploy-production.result == 'success' && (needs.deploy-production.outputs.deployed == 'true' && 'Deployed to production' || 'Not deployed: a newer commit is already live (stale run skipped)')
+        || needs.deploy-production.result == 'cancelled' && 'Not deployed: the production deploy was cancelled, re-run the newest main run'
+        || needs.deploy-production.result == 'skipped' && 'Not deployed: the production deploy was skipped'
+        || 'Production deploy failed' }}
+      deploy_note: ${{ needs.deploy-production.outputs.newer_head != '' && format('WARNING, newer commit {0} on main is not deployed. Re-run its production run.', needs.deploy-production.outputs.newer_head) || '' }}
       tags: ${{ inputs.discord_tags }}

@@ -32,6 +32,16 @@ on:
         required: false
         type: string
         default: ""
+      deploy_title:
+        description: "deploy event, deploy_mode=deployed only: replaces the default title ('Deployed to production'). Empty keeps the default."
+        required: false
+        type: string
+        default: ""
+      deploy_note:
+        description: "deploy event only: one extra line appended to the notice, for example a warning. Empty adds nothing."
+        required: false
+        type: string
+        default: ""
       workflow_name:
         description: "Override for context.workflow — required when invoked from a nested reusable workflow because context.workflow then resolves to this reusable's own name, not the calling pipeline's"
         required: false
@@ -66,6 +76,8 @@ jobs:
           WORKFLOW_NAME: ${{ inputs.workflow_name }}
           DEPLOY_MODE: ${{ inputs.deploy_mode }}
           IMAGE_TAG: ${{ inputs.image_tag }}
+          DEPLOY_TITLE: ${{ inputs.deploy_title }}
+          DEPLOY_NOTE: ${{ inputs.deploy_note }}
         with:
           script: |
             const rawWebhook = process.env.WEBHOOK_URL;
@@ -386,7 +398,7 @@ jobs:
                 : (status === 'success' ? '✅' : status === 'failure' ? '❌' : '⚠️');
               const deployTitle = published
                 ? (status === 'success' ? `Image published (\`${imageTag}\`); Image Updater will roll it out` : 'Image build failed')
-                : 'Deployed to production';
+                : (process.env.DEPLOY_TITLE || 'Deployed to production');
 
               const compareUrl = `${repoUrl}/compare/${context.payload.before?.substring(0, 7)}...${sha}`;
 
@@ -448,9 +460,10 @@ jobs:
               }
 
               const changeText = changelog || commitMsg;
-              const deployDescription = changeText
+              const deployBody = changeText
                 ? `${changeText}\n\n\`${sha}\` by ${actor}`
                 : `\`${sha}\` by ${actor}`;
+              const deployDescription = process.env.DEPLOY_NOTE ? `${deployBody}\n\n${process.env.DEPLOY_NOTE}` : deployBody;
 
               if (threadId) {
                 await discordPost({
