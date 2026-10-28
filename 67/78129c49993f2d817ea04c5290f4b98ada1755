@@ -1,0 +1,31 @@
+.github/tests/deploy-static-job-boundaries.test.rb
+  s_2be9db9895ab2c::t_9ca81ea4a4bf93 334-336,641-673,687,697
+.github/tests/deploy-static-token-job.test.rb
+  s_b9246d0625a629::t_a1239acaed6bfc 101-120,124,205-215,217
+.github/workflows/deploy-static-website.yaml
+  s_b9246d0625a629::t_e0876535585e99 587-588,846-861,864-865,867-883,1121,1142
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "6778129c49993f2d817ea04c5290f4b98ada1755",
+  "prompts": {},
+  "sessions": {
+    "s_2be9db9895ab2c": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a16c4b-5b6e-7362-abe6-04b5b035532d",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "mjnong <marcusnagy@icloud.com>"
+    },
+    "s_b9246d0625a629": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "eef2a70e-802f-4097-87fc-4092e46df79a",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "mjnong <marcusnagy@icloud.com>"
+    }
+  }
+}
