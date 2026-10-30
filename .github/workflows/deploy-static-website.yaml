@@ -792,6 +792,11 @@ jobs:
           # recorded one is stale and skips; a missing marker, an equal sha (redeploy), a descendant or diverged history all deploy. This
           # never skips a change that no newer run deployed. If the marker is malformed, names a commit this checkout does not have, or
           # cannot be read for any other reason, the step fails closed. The checkout is fetch-depth: 0 for the ancestry check.
+          # CEL-3080: this container job runs as root in a workspace the runner user owns, and actions/checkout trusts that directory only
+          # through a temporary HOME it discards, so a bare `git` here fails with "detected dubious ownership". The guard's `git cat-file`
+          # hid that behind 2>/dev/null and reported a live commit that IS in the checkout as missing. Trust the workspace for the guard's
+          # own git calls only (command-line config, not written to any gitconfig).
+          git() { command git -c safe.directory="${GITHUB_WORKSPACE:-$PWD}" "$@"; }
           marker="gs://${GCS_BUCKET}/${WEBSITE}/.deploy/sha"
           recovery="Operator recovery: gcloud storage rm ${marker} (see the runbook section 'Deploy marker' in ci-identities.md)"
           err=$(mktemp)
@@ -801,7 +806,8 @@ jobs:
               "" | *[!0-9a-f]*) echo "Live marker is not a commit sha: ${last}. ${recovery}" >&2; exit 1 ;;
             esac
             [ "${#last}" -eq 40 ] || { echo "Live marker is not a commit sha: ${last}. ${recovery}" >&2; exit 1; }
-            git cat-file -e "${last}^{commit}" 2>/dev/null || { echo "Live commit ${last} is not in this checkout, refusing to deploy. ${recovery}" >&2; exit 1; }
+            # Keep git's own error: "not in this checkout" and "git could not open the checkout" need different fixes.
+            git cat-file -e "${last}^{commit}" 2>"$err" || { cat "$err" >&2; echo "Live commit ${last} is not in this checkout, or git could not read it (see the git error above), refusing to deploy. ${recovery}" >&2; exit 1; }
             if [ "$last" != "$GITHUB_SHA" ]; then
               if git merge-base --is-ancestor "$GITHUB_SHA" "$last"; then
                 echo "::warning::stale deploy skipped: ${GITHUB_SHA} is an ancestor of live ${last}"

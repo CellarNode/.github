@@ -605,6 +605,18 @@ Dir.mktmpdir do |directory|
   abort "A stale run must only read the marker, got #{calls.inspect}" unless calls.length == 1 && calls[0].start_with?("storage cat")
   abort "A stale skip must emit deployed=false and never deployed=true, got #{deployed_output.call.inspect}" unless deployed_output.call == "deployed=false\n"
   assert_not_deployed.call("a marker commit this checkout does not have", c2, { "MARKER" => unknown }, recovery_hint: true)
+  # CEL-3080: the container job runs as root in a runner-owned workspace, which git treats as foreign (dubious ownership). The guard
+  # must still read history there, and a git failure must surface git's own message instead of "not in this checkout" alone.
+  foreign = { "GIT_TEST_ASSUME_DIFFERENT_OWNER" => "1" }
+  assert_deployed.call("a descendant in a foreign-owned workspace", c2, { "MARKER" => c1 }.merge(foreign))
+  out, _err, status, calls = deploy.call(c1, { "MARKER" => c2 }.merge(foreign))
+  abort "A stale run in a foreign-owned workspace must skip, got #{calls.inspect}" unless status.success? && calls.length == 1 && out.include?("stale deploy skipped")
+  _out, err, status, calls = deploy.call(c2, { "MARKER" => unknown })
+  abort "An unknown marker commit must surface git's error, got #{err.inspect}" if status.success? || !err.include?("fatal:") || calls.any? { |call| call.start_with?("storage rsync") }
+  broken = File.join(directory, "not-a-repo")
+  Dir.mkdir(broken) unless Dir.exist?(broken)
+  _out, err, status, calls = deploy.call(c2, { "MARKER" => c1, "GIT_DIR" => broken })
+  abort "A git that cannot open the checkout must fail closed with git's error, got #{err.inspect}" if status.success? || !err.include?("fatal:") || calls.any? { |call| call.start_with?("storage rsync") }
   assert_not_deployed.call("a marker that is not a sha", c2, { "MARKER" => "not-a-sha" }, recovery_hint: true)
   assert_not_deployed.call("an unreadable marker (403)", c2, { "MARKER_RC" => "1", "MARKER_ERR" => "ERROR: (gcloud.storage.cat) HTTPError 403: denied" })
   assert_not_deployed.call("a 404 is not 'no marker' (only gcloud's matched-no-objects wording is)", c2, { "MARKER_RC" => "1", "MARKER_ERR" => "ERROR: (gcloud.storage.cat) HTTPError 404: Not Found" })
