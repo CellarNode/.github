@@ -1,0 +1,23 @@
+.github/tests/deploy-static-token-job.test.rb
+  s_4fb4393eff17a7::t_aac095f94cb8d8 92
+.github/tests/deploy-static-job-boundaries.test.rb
+  s_4fb4393eff17a7::t_d1f8afe7f49bf1 620-640
+.github/workflows/deploy-static-website.yaml
+  s_4fb4393eff17a7::t_06269ab15704d3 812-817,822-825
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "bddee410ee8a801372635c5b155998088fe9be05",
+  "prompts": {},
+  "sessions": {
+    "s_4fb4393eff17a7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f4d34e26-752c-4de0-b0eb-3b816dce2681",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "github-actions[bot] <github-actions[bot]@users.noreply.github.com>"
+    }
+  }
+}
