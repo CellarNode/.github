@@ -1,0 +1,33 @@
+.github/tests/deploy-static-job-boundaries.test.rb
+  s_75d2cd8babd975::t_15590b20bea4b5 335-340,443-446,448,451-452,457-458,497,505-515,528-529,567-568,573-574,579-582,586,588,590-591,593-597,604,610-612,614-617,620-669,689-766
+.github/tests/deploy-static-token-job.test.rb
+  s_b9246d0625a629::t_1f16a85579c0ea 54-57,73,79,81-84,86-92,100-113,118,121,166-222,224-225,233-235,239
+.github/workflows/deploy-static-website.yaml
+  s_b9246d0625a629::t_02170dde452e98 584-588,592-596,652-653,655,773,793-798,800,803,805-806,810,817,822-836,839-874,1125-1133
+.github/workflows/discord-notify.yaml
+  s_b9246d0625a629::t_9bf7c909ff3ed9 35-44,79-80,401,463,466
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "ee8148c890894953acc966cbec7e9a92865fb74a",
+  "prompts": {},
+  "sessions": {
+    "s_75d2cd8babd975": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a17dd9-7b38-7c70-ad5e-e4299f7889a7",
+        "model": "gpt-6-luna"
+      },
+      "human_author": "mjnong <marcusnagy@icloud.com>"
+    },
+    "s_b9246d0625a629": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "eef2a70e-802f-4097-87fc-4092e46df79a",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "mjnong <marcusnagy@icloud.com>"
+    }
+  }
+}
