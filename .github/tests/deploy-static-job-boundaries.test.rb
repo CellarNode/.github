@@ -617,6 +617,27 @@ Dir.mktmpdir do |directory|
   Dir.mkdir(broken) unless Dir.exist?(broken)
   _out, err, status, calls = deploy.call(c2, { "MARKER" => c1, "GIT_DIR" => broken })
   abort "A git that cannot open the checkout must fail closed with git's error, got #{err.inspect}" if status.success? || !err.include?("fatal:") || calls.any? { |call| call.start_with?("storage rsync") }
+  # A git error from merge-base (exit 128, not 1) must fail closed in both the stale check and the diverged check. A stub git passes
+  # everything through except `merge-base --is-ancestor <STUB_FAIL_ARGS>`, which fails like git does on a corrupt object.
+  real_git = `command -v git`.strip
+  File.write(File.join(directory, "git"), <<~SH)
+    #!/bin/sh
+    case "$*" in
+      *"merge-base --is-ancestor $STUB_FAIL_ARGS") echo "fatal: bad object" >&2; exit 128 ;;
+    esac
+    exec #{real_git} "$@"
+  SH
+  File.chmod(0o755, File.join(directory, "git"))
+  no_write = ->(label, err, status, calls) { abort "#{label}: a merge-base error must fail closed with git's message and the recovery hint, got #{err.inspect} #{calls.inspect}" if status.success? || !err.include?("fatal: bad object") || !err.include?("gcloud storage rm") || calls.any? { |call| call.start_with?("storage rsync", "storage cp") } }
+  # Stale check: GITHUB_SHA=c1 vs live c2 would be a stale skip, but the comparison errors.
+  _out, err, status, calls = deploy.call(c1, { "MARKER" => c2, "STUB_FAIL_ARGS" => "#{c1} #{c2}" })
+  no_write.call("stale check", err, status, calls)
+  # Diverged check: d1 vs live c2 is not stale (exit 1), then the reverse comparison errors.
+  _out, err, status, calls = deploy.call(d1, { "MARKER" => c2, "STUB_FAIL_ARGS" => "#{c2} #{d1}" })
+  no_write.call("diverged check", err, status, calls)
+  # Control: the stub passing through must leave the normal outcomes unchanged.
+  assert_deployed.call("stub git passing through", c2, { "MARKER" => c1, "STUB_FAIL_ARGS" => "no such args" })
+  File.delete(File.join(directory, "git"))
   assert_not_deployed.call("a marker that is not a sha", c2, { "MARKER" => "not-a-sha" }, recovery_hint: true)
   assert_not_deployed.call("an unreadable marker (403)", c2, { "MARKER_RC" => "1", "MARKER_ERR" => "ERROR: (gcloud.storage.cat) HTTPError 403: denied" })
   assert_not_deployed.call("a 404 is not 'no marker' (only gcloud's matched-no-objects wording is)", c2, { "MARKER_RC" => "1", "MARKER_ERR" => "ERROR: (gcloud.storage.cat) HTTPError 404: Not Found" })

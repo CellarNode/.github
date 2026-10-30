@@ -809,12 +809,20 @@ jobs:
             # Keep git's own error: "not in this checkout" and "git could not open the checkout" need different fixes.
             git cat-file -e "${last}^{commit}" 2>"$err" || { cat "$err" >&2; echo "Live commit ${last} is not in this checkout, or git could not read it (see the git error above), refusing to deploy. ${recovery}" >&2; exit 1; }
             if [ "$last" != "$GITHUB_SHA" ]; then
-              if git merge-base --is-ancestor "$GITHUB_SHA" "$last"; then
+              # merge-base --is-ancestor exits 0 (ancestor) or 1 (not an ancestor); anything else is a git error, which must not read as
+              # "not stale" or "diverged" and deploy. `rc=0; cmd || rc=$?` keeps `sh -e` from aborting on the expected exit 1.
+              rc=0
+              git merge-base --is-ancestor "$GITHUB_SHA" "$last" 2>"$err" || rc=$?
+              if [ "$rc" -gt 1 ]; then cat "$err" >&2; echo "git could not compare ${GITHUB_SHA} with live ${last} (exit ${rc}), refusing to deploy. ${recovery}" >&2; exit 1; fi
+              if [ "$rc" -eq 0 ]; then
                 echo "::warning::stale deploy skipped: ${GITHUB_SHA} is an ancestor of live ${last}"
                 echo "deployed=false" >> "$GITHUB_OUTPUT"
                 exit 0
               fi
-              git merge-base --is-ancestor "$last" "$GITHUB_SHA" || echo "::warning::live ${last} and ${GITHUB_SHA} have diverged, deploying"
+              rc=0
+              git merge-base --is-ancestor "$last" "$GITHUB_SHA" 2>"$err" || rc=$?
+              if [ "$rc" -gt 1 ]; then cat "$err" >&2; echo "git could not compare live ${last} with ${GITHUB_SHA} (exit ${rc}), refusing to deploy. ${recovery}" >&2; exit 1; fi
+              if [ "$rc" -eq 1 ]; then echo "::warning::live ${last} and ${GITHUB_SHA} have diverged, deploying"; fi
             fi
           else
             case "$(cat "$err")" in
