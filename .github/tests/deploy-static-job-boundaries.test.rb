@@ -436,10 +436,12 @@ end
 
 bucket = workflow.fetch("env").fetch("GCS_BUCKET")
 site_prefix = /\Ags:\/\/\$\{GCS_BUCKET\}\/\$\{WEBSITE\}\/\z/
-# The one `recovery=` assignment is an operator-facing message that names `gcloud storage rm`; it is checked on its own below and never executed.
+# The `recovery=` and `git_recovery=` assignments are operator-facing messages that name `gcloud storage rm`; they are checked on their own below and never executed.
 RECOVERY_LINE = 'recovery="Operator recovery: gcloud storage rm ${marker} (see the runbook section \'Deploy marker\' in ci-identities.md)"'.freeze
-deploy_runs = deploy_steps.map { |step| [step.fetch("name", step.fetch("uses", "")), step.fetch("run", "").lines.reject { |line| line.lstrip.start_with?("#") || line.strip == RECOVERY_LINE }.join] }.reject { |_name, run| run.empty? }
+GIT_RECOVERY_PREFIX = 'git_recovery="A git error points to a runner or workflow problem'.freeze
+deploy_runs = deploy_steps.map { |step| [step.fetch("name", step.fetch("uses", "")), step.fetch("run", "").lines.reject { |line| line.lstrip.start_with?("#") || line.strip == RECOVERY_LINE || line.strip.start_with?(GIT_RECOVERY_PREFIX) }.join] }.reject { |_name, run| run.empty? }
 abort "The deploy step must carry the recovery message exactly once" unless deploy_steps.fetch(publish_index).fetch("run").lines.count { |line| line.strip == RECOVERY_LINE } == 1
+abort "The deploy step must carry the git-error recovery message exactly once" unless deploy_steps.fetch(publish_index).fetch("run").lines.count { |line| line.strip.start_with?(GIT_RECOVERY_PREFIX) } == 1
 production_gcloud_calls = deploy_runs.flat_map { |_name, run| run.scan(/(?<![\w-])gcloud\s+(?!warm-up)(?:\S+)\s+(?:\S+)/) }
 abort "Production path must run gcloud storage ls, cat, cp and rsync once each, got #{production_gcloud_calls.inspect}" unless production_gcloud_calls.length == 4
 abort "Production path may only run gcloud storage ls, cat, rsync and the marker cp" unless production_gcloud_calls.map { |call| call.split.values_at(1, 2).join(" ") }.sort == ["storage cat", "storage cp", "storage ls", "storage rsync"]
@@ -562,13 +564,17 @@ Dir.mktmpdir do |directory|
   unknown = "c" * 40
   # gcloud's real message for a missing object (not "No URLs matched", not a 404).
   missing = { "MARKER_RC" => "1", "MARKER_ERR" => "ERROR: (gcloud.storage.cat) The following URLs matched no objects or files:\n-gs://#{bucket}/admin.cellarnode.com/.deploy/sha" }
+  # The guard step's git must not borrow trust from the caller's environment: GitHub-hosted Ubuntu writes `[safe] directory = *` to
+  # /etc/gitconfig, which would make the foreign-owner cases pass with the git() wrapper deleted. Pin the workspace to the temp repo
+  # (the caller's GITHUB_WORKSPACE must not leak in) and drop the system and global configs.
+  guard_env = { "GITHUB_WORKSPACE" => File.realpath(directory), "GIT_CONFIG_NOSYSTEM" => "1", "GIT_CONFIG_GLOBAL" => "/dev/null" }
   deploy = lambda do |sha, extra|
     File.write(File.join(directory, "gcloud"), deploy_gcloud)
     File.chmod(0o755, File.join(directory, "gcloud"))
     File.write(log, "")
     [marker_out, File.join(directory, "rsynced"), File.join(directory, "post-cp-count")].each { |path| File.delete(path) if File.exist?(path) }
     File.write(step_output, "")
-    out, err, status = run_step.call("Deploy to production", posix, { "GITHUB_SHA" => sha }.merge(extra))
+    out, err, status = run_step.call("Deploy to production", posix, guard_env.merge({ "GITHUB_SHA" => sha }).merge(extra))
     [out, err, status, File.read(log).lines.map(&:strip)]
   end
   rsync_pattern = %r{\Astorage rsync .*--delete-unmatched-destination-objects -x \^\\\.deploy/ \./dist gs://#{Regexp.escape(bucket)}/admin\.cellarnode\.com/\z}
@@ -583,7 +589,7 @@ Dir.mktmpdir do |directory|
     abort "#{label}: the marker written must be the deployed sha" unless File.exist?(marker_out) && File.read(marker_out).strip == sha
     abort "#{label}: must emit deployed=true, got #{deployed_output.call.inspect}" unless deployed_output.call == "deployed=true\n"
   end
-  assert_not_deployed = lambda do |label, sha, extra, recovery_hint: false|
+  assert_not_deployed = lambda do |label, sha, extra, recovery_hint: nil|
     _out, err, status, calls = deploy.call(sha, extra)
     abort "#{label}: the step must fail closed" if status.success?
     abort "#{label}: nothing may be uploaded or marked, got #{calls.inspect}" unless calls.none? { |call| call.start_with?("storage rsync", "storage cp") }
@@ -591,6 +597,9 @@ Dir.mktmpdir do |directory|
     next unless recovery_hint
 
     abort "#{label}: the error must name the operator recovery, got #{err.inspect}" unless err.include?("gcloud storage rm #{marker_url}") && err.include?("Deploy marker")
+    git_wording = err.include?("runner or workflow problem") && err.include?("unblocks only one deploy")
+    abort "#{label}: a git error must say it is a runner or workflow problem and that removing the marker unblocks only one deploy, got #{err.inspect}" if recovery_hint == :git && !git_wording
+    abort "#{label}: a malformed marker keeps the plain recovery hint, got #{err.inspect}" if recovery_hint == :marker && git_wording
   end
 
   assert_deployed.call("no marker (first deploy)", c2, missing)
@@ -604,13 +613,36 @@ Dir.mktmpdir do |directory|
   abort "A stale run must emit the warning, got #{out.inspect}" unless out.include?("::warning::stale deploy skipped: #{c1} is an ancestor of live #{c2}")
   abort "A stale run must only read the marker, got #{calls.inspect}" unless calls.length == 1 && calls[0].start_with?("storage cat")
   abort "A stale skip must emit deployed=false and never deployed=true, got #{deployed_output.call.inspect}" unless deployed_output.call == "deployed=false\n"
-  assert_not_deployed.call("a marker commit this checkout does not have", c2, { "MARKER" => unknown }, recovery_hint: true)
+  assert_not_deployed.call("a marker commit this checkout does not have", c2, { "MARKER" => unknown }, recovery_hint: :git)
   # CEL-3080: the container job runs as root in a runner-owned workspace, which git treats as foreign (dubious ownership). The guard
   # must still read history there, and a git failure must surface git's own message instead of "not in this checkout" alone.
   foreign = { "GIT_TEST_ASSUME_DIFFERENT_OWNER" => "1" }
   assert_deployed.call("a descendant in a foreign-owned workspace", c2, { "MARKER" => c1 }.merge(foreign))
   out, _err, status, calls = deploy.call(c1, { "MARKER" => c2 }.merge(foreign))
   abort "A stale run in a foreign-owned workspace must skip, got #{calls.inspect}" unless status.success? && calls.length == 1 && out.include?("stale deploy skipped")
+  # A GITHUB_WORKSPACE that is not the repository must not grant trust: the foreign-owned repo stays untrusted and the guard fails
+  # closed with git's own message. Even a system config that trusts every directory cannot rescue it (GIT_CONFIG_NOSYSTEM wins), which
+  # is what keeps these cases meaningful on hosted runners that write `safe.directory = *` to /etc/gitconfig.
+  other_workspace = File.join(directory, "other-workspace")
+  Dir.mkdir(other_workspace) unless Dir.exist?(other_workspace)
+  star_config = File.join(directory, "system-gitconfig")
+  File.write(star_config, "[safe]\n\tdirectory = *\n")
+  [["a different GITHUB_WORKSPACE", {}], ["a different GITHUB_WORKSPACE under a safe.directory=* system config", { "GIT_CONFIG_SYSTEM" => star_config }]].each do |label, more|
+    _out, err, status, calls = deploy.call(c2, { "MARKER" => c1, "GITHUB_WORKSPACE" => File.realpath(other_workspace) }.merge(foreign).merge(more))
+    abort "#{label} in a foreign-owned workspace must fail closed with git's message and the git hint, got #{err.inspect} #{calls.inspect}" if status.success? || !err.include?("dubious ownership") || !err.include?("runner or workflow problem") || calls.any? { |call| call.start_with?("storage rsync", "storage cp") }
+  end
+  # No lazy fetch: in a partial clone a missing object would be fetched from the promisor remote named in the workspace's .git/config
+  # (which the guard does not control). The live commit exists only in that remote here; the guard must fail closed without fetching it.
+  lazy_src = File.join(directory, "lazy-src.git")
+  git.call("clone", "-q", "--bare", ".", lazy_src)
+  lazy_only = git.call("--git-dir", lazy_src, "commit-tree", git.call("rev-parse", "#{c1}^{tree}"), "-m", "lazy-only")
+  git.call("--git-dir", lazy_src, "config", "uploadpack.allowAnySHA1InWant", "true")
+  { "core.repositoryformatversion" => "1", "extensions.partialClone" => "origin", "remote.origin.url" => lazy_src, "remote.origin.promisor" => "true", "remote.origin.partialclonefilter" => "blob:none" }.each { |key, value| git.call("config", key, value) }
+  _out, err, status, calls = deploy.call(c2, { "MARKER" => lazy_only })
+  fetched = File.exist?(File.join(directory, ".git", "objects", lazy_only[0, 2], lazy_only[2..]))
+  [["remote.origin.url", true], ["remote.origin.promisor", true], ["remote.origin.partialclonefilter", true], ["extensions.partialClone", true]].each { |key, _| git.call("config", "--unset", key) }
+  git.call("config", "core.repositoryformatversion", "0")
+  abort "A commit that exists only on the promisor remote must fail closed without a lazy fetch, got #{err.inspect} #{calls.inspect}" if fetched || status.success? || !err.include?("fatal:") || calls.any? { |call| call.start_with?("storage rsync", "storage cp") }
   _out, err, status, calls = deploy.call(c2, { "MARKER" => unknown })
   abort "An unknown marker commit must surface git's error, got #{err.inspect}" if status.success? || !err.include?("fatal:") || calls.any? { |call| call.start_with?("storage rsync") }
   broken = File.join(directory, "not-a-repo")
@@ -619,7 +651,8 @@ Dir.mktmpdir do |directory|
   abort "A git that cannot open the checkout must fail closed with git's error, got #{err.inspect}" if status.success? || !err.include?("fatal:") || calls.any? { |call| call.start_with?("storage rsync") }
   # A git error from merge-base (exit 128, not 1) must fail closed in both the stale check and the diverged check. A stub git passes
   # everything through except `merge-base --is-ancestor <STUB_FAIL_ARGS>`, which fails like git does on a corrupt object.
-  real_git = `command -v git`.strip
+  real_git = IO.popen(["sh", "-c", "command -v git"], &:read).strip
+  abort "Could not locate git for the stub" if real_git.empty?
   File.write(File.join(directory, "git"), <<~SH)
     #!/bin/sh
     case "$*" in
@@ -628,7 +661,7 @@ Dir.mktmpdir do |directory|
     exec #{real_git} "$@"
   SH
   File.chmod(0o755, File.join(directory, "git"))
-  no_write = ->(label, err, status, calls) { abort "#{label}: a merge-base error must fail closed with git's message and the recovery hint, got #{err.inspect} #{calls.inspect}" if status.success? || !err.include?("fatal: bad object") || !err.include?("gcloud storage rm") || calls.any? { |call| call.start_with?("storage rsync", "storage cp") } }
+  no_write = ->(label, err, status, calls) { abort "#{label}: a merge-base error must fail closed with git's message and the recovery hint, got #{err.inspect} #{calls.inspect}" if status.success? || !err.include?("fatal: bad object") || !err.include?("gcloud storage rm") || !err.include?("runner or workflow problem") || !err.include?("unblocks only one deploy") || calls.any? { |call| call.start_with?("storage rsync", "storage cp") } }
   # Stale check: GITHUB_SHA=c1 vs live c2 would be a stale skip, but the comparison errors.
   _out, err, status, calls = deploy.call(c1, { "MARKER" => c2, "STUB_FAIL_ARGS" => "#{c1} #{c2}" })
   no_write.call("stale check", err, status, calls)
@@ -638,7 +671,7 @@ Dir.mktmpdir do |directory|
   # Control: the stub passing through must leave the normal outcomes unchanged.
   assert_deployed.call("stub git passing through", c2, { "MARKER" => c1, "STUB_FAIL_ARGS" => "no such args" })
   File.delete(File.join(directory, "git"))
-  assert_not_deployed.call("a marker that is not a sha", c2, { "MARKER" => "not-a-sha" }, recovery_hint: true)
+  assert_not_deployed.call("a marker that is not a sha", c2, { "MARKER" => "not-a-sha" }, recovery_hint: :marker)
   assert_not_deployed.call("an unreadable marker (403)", c2, { "MARKER_RC" => "1", "MARKER_ERR" => "ERROR: (gcloud.storage.cat) HTTPError 403: denied" })
   assert_not_deployed.call("a 404 is not 'no marker' (only gcloud's matched-no-objects wording is)", c2, { "MARKER_RC" => "1", "MARKER_ERR" => "ERROR: (gcloud.storage.cat) HTTPError 404: Not Found" })
   assert_not_deployed.call("the old 'No URLs matched' wording is not accepted", c2, { "MARKER_RC" => "1", "MARKER_ERR" => "ERROR: (gcloud.storage.cat) No URLs matched: #{marker_url}" })
