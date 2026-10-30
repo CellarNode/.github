@@ -792,23 +792,41 @@ jobs:
           # recorded one is stale and skips; a missing marker, an equal sha (redeploy), a descendant or diverged history all deploy. This
           # never skips a change that no newer run deployed. If the marker is malformed, names a commit this checkout does not have, or
           # cannot be read for any other reason, the step fails closed. The checkout is fetch-depth: 0 for the ancestry check.
+          # CEL-3080: this container job runs as root in a workspace the runner user owns, and actions/checkout trusts that directory only
+          # through a temporary HOME it discards, so a bare `git` here fails with "detected dubious ownership". The guard's `git cat-file`
+          # hid that behind 2>/dev/null and reported a live commit that IS in the checkout as missing. Trust the workspace for the guard's
+          # own git calls only (command-line config, not written to any gitconfig). protocol.allow=never stops a partial clone from lazily
+          # fetching a missing object through the workspace's .git/config: cat-file and merge-base need only the commit objects that
+          # fetch-depth: 0 already brought, and an absent commit must fail closed rather than reach the network.
+          git() { command git -c safe.directory="${GITHUB_WORKSPACE:-$PWD}" -c protocol.allow=never "$@"; }
           marker="gs://${GCS_BUCKET}/${WEBSITE}/.deploy/sha"
           recovery="Operator recovery: gcloud storage rm ${marker} (see the runbook section 'Deploy marker' in ci-identities.md)"
+          git_recovery="A git error points to a runner or workflow problem, not to the marker. Removing it (gcloud storage rm ${marker}) unblocks only one deploy: the marker comes back and the next deploy fails again until the cause is fixed (see the runbook section 'Deploy marker' in ci-identities.md)"
           err=$(mktemp)
+          trap 'rm -f "$err"' EXIT
           if last=$(gcloud storage cat "$marker" 2>"$err"); then
             last=$(printf '%s' "$last" | tr -d '[:space:]')
             case "$last" in
               "" | *[!0-9a-f]*) echo "Live marker is not a commit sha: ${last}. ${recovery}" >&2; exit 1 ;;
             esac
             [ "${#last}" -eq 40 ] || { echo "Live marker is not a commit sha: ${last}. ${recovery}" >&2; exit 1; }
-            git cat-file -e "${last}^{commit}" 2>/dev/null || { echo "Live commit ${last} is not in this checkout, refusing to deploy. ${recovery}" >&2; exit 1; }
+            # Keep git's own error: "not in this checkout" and "git could not open the checkout" need different fixes.
+            git cat-file -e "${last}^{commit}" 2>"$err" || { cat "$err" >&2; echo "Live commit ${last} is not in this checkout, or git could not read it (see the git error above), refusing to deploy. ${git_recovery}" >&2; exit 1; }
             if [ "$last" != "$GITHUB_SHA" ]; then
-              if git merge-base --is-ancestor "$GITHUB_SHA" "$last"; then
+              # merge-base --is-ancestor exits 0 (ancestor) or 1 (not an ancestor); anything else is a git error, which must not read as
+              # "not stale" or "diverged" and deploy. `rc=0; cmd || rc=$?` keeps `sh -e` from aborting on the expected exit 1.
+              rc=0
+              git merge-base --is-ancestor "$GITHUB_SHA" "$last" 2>"$err" || rc=$?
+              if [ "$rc" -gt 1 ]; then cat "$err" >&2; echo "git could not compare ${GITHUB_SHA} with live ${last} (exit ${rc}), refusing to deploy. ${git_recovery}" >&2; exit 1; fi
+              if [ "$rc" -eq 0 ]; then
                 echo "::warning::stale deploy skipped: ${GITHUB_SHA} is an ancestor of live ${last}"
                 echo "deployed=false" >> "$GITHUB_OUTPUT"
                 exit 0
               fi
-              git merge-base --is-ancestor "$last" "$GITHUB_SHA" || echo "::warning::live ${last} and ${GITHUB_SHA} have diverged, deploying"
+              rc=0
+              git merge-base --is-ancestor "$last" "$GITHUB_SHA" 2>"$err" || rc=$?
+              if [ "$rc" -gt 1 ]; then cat "$err" >&2; echo "git could not compare live ${last} with ${GITHUB_SHA} (exit ${rc}), refusing to deploy. ${git_recovery}" >&2; exit 1; fi
+              if [ "$rc" -eq 1 ]; then echo "::warning::live ${last} and ${GITHUB_SHA} have diverged, deploying"; fi
             fi
           else
             case "$(cat "$err")" in
