@@ -14,6 +14,10 @@ require "open3"
 # Scope: ONLY the two shared deploy workflows are held to this contract (they are the ones that gate production deploys and
 # take the argocd_deploy input). An unrelated workflow added to .github/workflows later is deliberately NOT checked here.
 WORKFLOWS = %w[deploy-backend.yaml deploy-cloudrun.yaml].freeze
+# CEL-2795: these report the deploy from the LAST STEP of their build/deploy jobs instead of a separate `discord-deploy` job, which
+# queued for a pool runner after the deploy and held the caller's concurrency group. Their notification contract (when each step posts,
+# the status it reports, the script itself) lives in discord-deploy-in-job.test.rb; the wording checks below still apply to them.
+IN_JOB_NOTIFY = %w[deploy-backend.yaml].freeze
 DIR = File.expand_path("../workflows", __dir__)
 FAILURES = []
 CI_RUNNER_IMAGE = "europe-north1-docker.pkg.dev/festive-terrain-478011-h0/beveriq/ci-runner@sha256:b8ae250c5d7fae79dbbea1f62ca7613ecabd6f3efbd13b533cbdecb293cdf814".freeze
@@ -98,7 +102,9 @@ WORKFLOWS.each do |file|
     fail!("#{file}: argocd_deploy must be a boolean defaulting to true (existing callers must keep deploying)")
   end
   dd = jobs["discord-deploy"]
-  unless dd && Array(dd["needs"]).sort == %w[build deploy] && dd.dig("with", "status").to_s.include?("needs.build.result")
+  if IN_JOB_NOTIFY.include?(file)
+    fail!("#{file}: the deploy notification must be the last step of build and deploy, not a discord-deploy job that holds the caller's concurrency group") if dd
+  elsif !(dd && Array(dd["needs"]).sort == %w[build deploy] && dd.dig("with", "status").to_s.include?("needs.build.result"))
     fail!("#{file}: discord-deploy must need [build, deploy] and report the build result when the deploy is skipped by design")
   end
 
@@ -159,7 +165,13 @@ def notify_failures(file, dd, notify_text)
     out << "#{file}: deploy_mode with argocd_deploy=#{flag} => #{got}, expected #{want}" if got != want
   end
   out << "#{file}: discord-deploy must pass image_tag from the build job" unless dd.dig("with", "image_tag").to_s.include?("needs.build.outputs.image_tag")
-  # wording lives in discord-notify.yaml
+  out.concat(wording_failures(notify_text))
+  out
+end
+
+# wording lives in discord-notify.yaml (and, verbatim, in the script inlined into deploy-backend.yaml)
+def wording_failures(notify_text)
+  out = []
   out << "discord-notify: the deployed wording must be `Deployed to production`" unless notify_text.include?("'Deployed to production'")
   pub = notify_text[/const deployTitle = published[\s\S]*?\n\n/].to_s
   out << "discord-notify: the published wording must say the image was published and Image Updater rolls it out" unless pub.include?("Image published") && pub.include?("Image Updater will roll it out")
@@ -169,7 +181,10 @@ def notify_failures(file, dd, notify_text)
 end
 
 NOTIFY = File.read(File.join(DIR, "discord-notify.yaml"))
-WORKFLOWS.each do |file|
+FAILURES.concat(wording_failures(NOTIFY))
+fail!("the wording checks must be able to fail: a drifted published wording was NOT caught") if wording_failures(NOTIFY.sub("Image published", "Deployed to production")).empty?
+
+(WORKFLOWS - IN_JOB_NOTIFY).each do |file|
   wf = YAML.safe_load(File.read(File.join(DIR, file)), aliases: true)
   dd = wf.fetch("jobs").fetch("discord-deploy")
   FAILURES.concat(notify_failures(file, dd, NOTIFY))

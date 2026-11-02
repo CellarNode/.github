@@ -6,6 +6,7 @@ on:
       - .github/tests/buildkit-mtls-client.test.rb
       - .github/tests/deploy-gate-contract.test.rb
       - .github/tests/deploy-backend-loop.test.rb
+      - .github/tests/discord-deploy-in-job.test.rb
       - .github/workflows/deploy-backend.yaml
       - .github/workflows/deploy-cloudrun.yaml
       - .github/workflows/discord-notify.yaml
@@ -16,6 +17,7 @@ on:
       - .github/tests/buildkit-mtls-client.test.rb
       - .github/tests/deploy-gate-contract.test.rb
       - .github/tests/deploy-backend-loop.test.rb
+      - .github/tests/discord-deploy-in-job.test.rb
       - .github/workflows/deploy-backend.yaml
       - .github/workflows/deploy-cloudrun.yaml
       - .github/workflows/discord-notify.yaml
@@ -61,3 +63,16 @@ jobs:
           persist-credentials: false
       - name: Test the deploy loop behaviour
         run: ruby .github/tests/deploy-backend-loop.test.rb
+
+  discord-deploy-in-job:
+    # CEL-2795: the backend deploy notification is the last step of build/deploy, not a job that holds the caller's concurrency group.
+    # Executes the inlined script under node (stubbed GitHub and Discord), keeps it a verbatim subset of discord-notify.yaml, and mutates
+    # the workflow contract to prove each check can fail.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Test the in-job deploy notification
+        run: ruby .github/tests/discord-deploy-in-job.test.rb
