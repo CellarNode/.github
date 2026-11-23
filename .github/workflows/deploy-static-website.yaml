@@ -794,6 +794,21 @@ jobs:
           # cannot be read for any other reason, the step fails closed. The checkout is fetch-depth: 0 for the ancestry check.
           marker="gs://${GCS_BUCKET}/${WEBSITE}/.deploy/sha"
           recovery="Operator recovery: gcloud storage rm ${marker} (see the runbook section 'Deploy marker' in ci-identities.md)"
+          # Checkout trusts this path through its temporary Git configuration.
+          # The runner can own the workspace even when this step runs as another user.
+          deploy_git() { git -C "$GITHUB_WORKSPACE" -c "safe.directory=$GITHUB_WORKSPACE" "$@"; }
+          marker_ancestor() {
+            if deploy_git merge-base --is-ancestor "$1" "$2"; then
+              return 0
+            else
+              ancestry_status=$?
+              if [ "$ancestry_status" -ne 1 ]; then
+                echo "Git could not verify deployment ancestry, refusing to deploy." >&2
+                exit "$ancestry_status"
+              fi
+              return 1
+            fi
+          }
           err=$(mktemp)
           if last=$(gcloud storage cat "$marker" 2>"$err"); then
             last=$(printf '%s' "$last" | tr -d '[:space:]')
@@ -801,14 +816,14 @@ jobs:
               "" | *[!0-9a-f]*) echo "Live marker is not a commit sha: ${last}. ${recovery}" >&2; exit 1 ;;
             esac
             [ "${#last}" -eq 40 ] || { echo "Live marker is not a commit sha: ${last}. ${recovery}" >&2; exit 1; }
-            git cat-file -e "${last}^{commit}" 2>/dev/null || { echo "Live commit ${last} is not in this checkout, refusing to deploy. ${recovery}" >&2; exit 1; }
+            deploy_git cat-file -e "${last}^{commit}" || { echo "Git could not verify live commit ${last} in the checkout, refusing to deploy. ${recovery}" >&2; exit 1; }
             if [ "$last" != "$GITHUB_SHA" ]; then
-              if git merge-base --is-ancestor "$GITHUB_SHA" "$last"; then
+              if marker_ancestor "$GITHUB_SHA" "$last"; then
                 echo "::warning::stale deploy skipped: ${GITHUB_SHA} is an ancestor of live ${last}"
                 echo "deployed=false" >> "$GITHUB_OUTPUT"
                 exit 0
               fi
-              git merge-base --is-ancestor "$last" "$GITHUB_SHA" || echo "::warning::live ${last} and ${GITHUB_SHA} have diverged, deploying"
+              marker_ancestor "$last" "$GITHUB_SHA" || echo "::warning::live ${last} and ${GITHUB_SHA} have diverged, deploying"
             fi
           else
             case "$(cat "$err")" in
