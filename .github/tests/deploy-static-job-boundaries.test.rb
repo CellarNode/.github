@@ -597,7 +597,15 @@ Dir.mktmpdir do |directory|
   assert_deployed.call("no marker (first deploy)", c2, missing)
   assert_deployed.call("equal sha (redeploy)", c2, { "MARKER" => c2 })
   assert_deployed.call("a descendant of the live commit", c2, { "MARKER" => c1 })
-  foreign_owner = { "GIT_TEST_ASSUME_DIFFERENT_OWNER" => "1", "LC_ALL" => "C" }
+  # Keep the ownership reproduction independent of the host's Git trust configuration.
+  foreign_owner = {
+    "GIT_TEST_ASSUME_DIFFERENT_OWNER" => "1",
+    "GIT_CONFIG_NOSYSTEM" => "1",
+    "GIT_CONFIG_GLOBAL" => File::NULL,
+    "GIT_CONFIG_COUNT" => nil,
+    "GIT_CONFIG_PARAMETERS" => nil,
+    "LC_ALL" => "C",
+  }
   _out, err, status = Open3.capture3(foreign_owner, "git", "cat-file", "-e", "#{c1}^{commit}", chdir: directory)
   abort "The checkout fixture must reproduce Git's ownership rejection: #{err}" if status.success? || !err.include?("dubious ownership")
   assert_deployed.call("a valid live marker in a runner-owned checkout", c2, foreign_owner.merge("MARKER" => c1))
