@@ -93,7 +93,8 @@ def failures_for(workflow)
   out << "deploy-production: the rsync must exclude .deploy/ so --delete-unmatched never removes the marker" unless deploy_run.match?(/gcloud storage rsync [^\n]*--delete-unmatched-destination-objects[^\n]*-x '\^\\\.deploy\/'/)
   out << "deploy-production: the skip path must emit ::warning::stale deploy skipped" unless deploy_run.include?('echo "::warning::stale deploy skipped:')
   out << "deploy-production: an unknown marker commit must fail closed" unless deploy_run.match?(/git cat-file -e "\$\{last\}\^\{commit\}"[^\n]*exit 1/)
-  out << "deploy-production: the guard must use an ancestry check" unless deploy_run.include?('git merge-base --is-ancestor "$GITHUB_SHA" "$last"')
+  out << "deploy-production: the guard must use an ancestry check" unless deploy_run.include?('marker_ancestor "$GITHUB_SHA" "$last"') && deploy_run.include?('deploy_git merge-base --is-ancestor "$1" "$2"')
+  out << "deploy-production: Git trust must be scoped to the checked-out workspace" unless deploy_run.include?('git -C "$GITHUB_WORKSPACE" -c "safe.directory=$GITHUB_WORKSPACE" "$@"')
   out << "deploy-production: the guard must not look up the branch head (it fails open)" if deploy_run.include?("api.github.com") || deploy_run.include?("ls-remote")
   checkout = production_steps.find { |step| step.fetch("uses", "").start_with?("actions/checkout@") }
   out << "deploy-production: the checkout needs fetch-depth: 0 for the ancestry check" unless checkout && checkout.fetch("with", {})["fetch-depth"] == 0

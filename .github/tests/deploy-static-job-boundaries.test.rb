@@ -520,6 +520,7 @@ Dir.mktmpdir do |directory|
       "GCS_BUCKET" => bucket,
       "WEBSITE" => "admin.cellarnode.com",
       "GITHUB_SHA" => "a" * 40,
+      "GITHUB_WORKSPACE" => directory,
       "MARKER_OUT" => marker_out,
       "STUB_DIR" => directory,
       "GITHUB_OUTPUT" => step_output,
@@ -596,6 +597,11 @@ Dir.mktmpdir do |directory|
   assert_deployed.call("no marker (first deploy)", c2, missing)
   assert_deployed.call("equal sha (redeploy)", c2, { "MARKER" => c2 })
   assert_deployed.call("a descendant of the live commit", c2, { "MARKER" => c1 })
+  foreign_owner = { "GIT_TEST_ASSUME_DIFFERENT_OWNER" => "1", "LC_ALL" => "C" }
+  _out, err, status = Open3.capture3(foreign_owner, "git", "cat-file", "-e", "#{c1}^{commit}", chdir: directory)
+  abort "The checkout fixture must reproduce Git's ownership rejection: #{err}" if status.success? || !err.include?("dubious ownership")
+  assert_deployed.call("a valid live marker in a runner-owned checkout", c2, foreign_owner.merge("MARKER" => c1))
+  assert_not_deployed.call("Git cannot evaluate the ancestry", unknown, { "MARKER" => c1 })
   out, err, status, calls = deploy.call(d1, { "MARKER" => c2 })
   abort "Diverged history must still deploy: #{err}" unless status.success? && calls.length == 4
   abort "Diverged history must warn, got #{out.inspect}" unless out.include?("::warning::live #{c2} and #{d1} have diverged, deploying")
