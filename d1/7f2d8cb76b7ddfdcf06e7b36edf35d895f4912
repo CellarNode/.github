@@ -1,0 +1,24 @@
+.github/workflows/deploy-static-website.yaml
+  s_75d2cd8babd975::t_30fc73045eca0c 797-811,819,821,826
+.github/tests/deploy-static-token-job.test.rb
+  s_75d2cd8babd975::t_a3ba74eb740153 96-97
+.github/tests/deploy-static-job-boundaries.test.rb
+  s_75d2cd8babd975::t_a3ba74eb740153 600
+  s_75d2cd8babd975::t_30fc73045eca0c 523,601-604
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "d17f2d8cb76b7ddfdcf06e7b36edf35d895f4912",
+  "prompts": {},
+  "sessions": {
+    "s_75d2cd8babd975": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a17dd9-7b38-7c70-ad5e-e4299f7889a7",
+        "model": "gpt-6.2-sol"
+      },
+      "human_author": "github-actions[bot] <github-actions[bot]@users.noreply.github.com>"
+    }
+  }
+}
